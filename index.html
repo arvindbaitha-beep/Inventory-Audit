@@ -345,9 +345,10 @@ const bracketOf=p=>BRACKETS.find(b=>p>=b.min&&p<b.max)||BRACKETS[3];
 
 const S={
   master:[], lines:[], shelfDone:{}, users:[], ccHistory:[],
-  cfg:{minLifePct:50, job:"", author:"Arvind Kumar", site:"", ccComplete:false, ccId:"", ccStatus:"OPEN", ccStartedAt:"", ccClosedAt:"", ccClosedBy:"", ccSeq:0, deletedShelves:{},shelfLocks:{}},
+  cfg:{minLifePct:50, job:"", author:"Arvind Kumar", site:"", taskId:"", taskStatus:"EMPTY", taskStartedAt:"", taskCompletedAt:"", previousTaskId:"", deletedShelves:{},shelfLocks:{}},
   cloud:{url:"", key:"", auto:true, lastPush:"", lastPull:"", err:""},
   me:null, view:"dash", activeShelf:null, editId:null,
+  idx:{masterShelf:new Map(), masterSku:new Map(), lineShelf:new Map(), lineKey:new Map()},
   filter:"all", q:"", bkFilter:"all", searchQ:"",
   booted:false, dirty:{master:false,lines:false,state:false,users:false}
 };
@@ -420,42 +421,48 @@ function life(mfg,exp){
 
 function reconcile(shelf){
   const m=new Map();
-  for(const r of S.master) if(r.shelf===shelf){
+  for(const r of masterRows(shelf)){
     const e=m.get(r.sku)||{sku:r.sku,desc:r.desc,uom:r.uom,systemQty:0,scanned:0,lines:[]};
-    e.systemQty+=r.qty; if(!e.desc)e.desc=r.desc; m.set(r.sku,e);}
-  for(const l of S.lines) if(l.shelf===shelf){
+    e.systemQty+=num(r.qty); if(!e.desc)e.desc=r.desc; m.set(r.sku,e);
+  }
+  for(const l of lineRows(shelf)){
     const e=m.get(l.sku)||{sku:l.sku,desc:"",uom:"",systemQty:0,scanned:0,lines:[],extra:true};
-    e.scanned+=l.qty; e.lines.push(l); m.set(l.sku,e);}
-  return [...m.values()].map(e=>({...e,diff:e.scanned-e.systemQty,touched:e.lines.length>0}))
-    .sort((a,b)=>a.sku<b.sku?-1:a.sku>b.sku?1:0);
+    e.scanned+=num(l.qty); e.lines.push(l); m.set(l.sku,e);
+  }
+  return [...m.values()].map(e=>({...e,diff:e.scanned-e.systemQty,touched:e.lines.length>0})).sort((a,b)=>a.sku<b.sku?-1:a.sku>b.sku?1:0);
 }
+function rebuildIndexes(){
+  const ix=S.idx={masterShelf:new Map(),masterSku:new Map(),lineShelf:new Map(),lineKey:new Map()};
+  for(const r of S.master){
+    if(!ix.masterShelf.has(r.shelf))ix.masterShelf.set(r.shelf,[]); ix.masterShelf.get(r.shelf).push(r);
+    ix.masterSku.set(String(r.shelf)+"\u0000"+String(r.sku),r);
+  }
+  for(const l of S.lines){
+    if(!ix.lineShelf.has(l.shelf))ix.lineShelf.set(l.shelf,[]); ix.lineShelf.get(l.shelf).push(l);
+    ix.lineKey.set(String(l.id),l);
+  }
+}
+function masterRows(shelf){return S.idx.masterShelf.get(shelf)||[]}
+function lineRows(shelf){return S.idx.lineShelf.get(shelf)||[]}
+
 function shelfStat(shelf){
-  const mR=S.master.filter(r=>r.shelf===shelf), lR=S.lines.filter(l=>l.shelf===shelf);
-  const sysQty=mR.reduce((s,r)=>s+r.qty,0), cntQty=lR.reduce((s,l)=>s+l.qty,0);
+  const mR=masterRows(shelf), lR=lineRows(shelf);
+  const sysQty=mR.reduce((x,r)=>x+num(r.qty),0), cntQty=lR.reduce((x,l)=>x+num(l.qty),0);
   const skuSet=new Set(mR.map(r=>r.sku)), cnt=new Set(lR.map(l=>l.sku));
   const sub=S.shelfDone[shelf]||null;
-  return{shelf,sysQty,cntQty,diff:cntQty-sysQty,skuTotal:skuSet.size,
-    skuCounted:[...cnt].filter(s=>skuSet.has(s)).length,
-    extraSku:[...cnt].filter(s=>!skuSet.has(s)).length,
-    lines:lR.length, sub, done:!!sub,
-    state:sub?"done":(lR.length?"part":"pending"),
-    by:sub?sub.byName:(lR.length?lR[lR.length-1].byName:"")};
+  let skuCounted=0,extraSku=0; for(const x of cnt)(skuSet.has(x)?skuCounted++:extraSku++);
+  return{shelf,sysQty,cntQty,diff:cntQty-sysQty,skuTotal:skuSet.size,skuCounted,extraSku,lines:lR.length,sub,done:!!sub,state:sub?"done":(lR.length?"part":"pending"),by:sub?sub.byName:(lR.length?lR[lR.length-1].byName:"")};
 }
 function allShelves(){
-  const k=new Set([...S.master.map(r=>r.shelf),...S.lines.map(l=>l.shelf)]);
+  const k=new Set(S.master.map(r=>r.shelf)); for(const l of S.lines)k.add(l.shelf);
   return [...k].sort().map(shelfStat);
 }
 function totals(){
   const st=allShelves();
-  const sysQty=S.master.reduce((s,r)=>s+r.qty,0), cntQty=S.lines.reduce((s,l)=>s+l.qty,0);
-  const sysK=new Set(S.master.map(r=>r.shelf+"\u0000"+r.sku));
-  const cntK=new Set(S.lines.map(l=>l.shelf+"\u0000"+l.sku));
-  let matched=0; cntK.forEach(k=>{if(sysK.has(k))matched++});
-  return{shelves:st.length, done:st.filter(s=>s.state==="done").length,
-    part:st.filter(s=>s.state==="part").length, pending:st.filter(s=>s.state==="pending").length,
-    skuTotal:sysK.size, skuCounted:matched, skuExtra:cntK.size-matched,
-    sysQty,cntQty,diff:cntQty-sysQty, lines:S.lines.length,
-    accuracy:sysQty>0?Math.max(0,100-Math.abs(cntQty-sysQty)/sysQty*100):0, stats:st};
+  let sysQty=0,cntQty=0; for(const r of S.master)sysQty+=num(r.qty); for(const l of S.lines)cntQty+=num(l.qty);
+  const sysK=new Set(),cntK=new Set(); for(const r of S.master)sysK.add(r.shelf+"\u0000"+r.sku); for(const l of S.lines)cntK.add(l.shelf+"\u0000"+l.sku);
+  let matched=0; for(const k of cntK)if(sysK.has(k))matched++;
+  return{shelves:st.length,done:st.filter(s=>s.state==="done").length,part:st.filter(s=>s.state==="part").length,pending:st.filter(s=>s.state==="pending").length,skuTotal:sysK.size,skuCounted:matched,skuExtra:cntK.size-matched,sysQty,cntQty,diff:cntQty-sysQty,lines:S.lines.length,accuracy:sysQty>0?Math.max(0,100-Math.abs(cntQty-sysQty)/sysQty*100):0,stats:st};
 }
 function bracketAgg(){
   const map={}; BRACKETS.forEach(b=>map[b.k]={...b,qty:0,lines:0,skus:new Set()});
@@ -472,26 +479,18 @@ function snap(){try{localStorage.setItem(LS,JSON.stringify(
 function loadLocal(){try{const d=JSON.parse(localStorage.getItem(LS)||"null");if(!d)return null;
   S.master=d.master||[];S.lines=d.lines||[];S.users=d.users||[];S.ccHistory=Array.isArray(d.ccHistory)?d.ccHistory:[];
   S.shelfDone=migrate(d.shelfDone||{});S.cfg=Object.assign(S.cfg,d.cfg||{});
-  S.cloud=Object.assign(S.cloud,d.cloud||{});return d.me}catch(e){return null}}
+  S.cloud=Object.assign(S.cloud,d.cloud||{});rebuildIndexes();return d.me}catch(e){return null}}
 function migrate(sd){const o={};for(const k in sd){const v=sd[k];
   o[k]=(v&&typeof v==="object")?v:{by:"",byName:"—",at:""}}return o}
 const chunk=(a,n)=>{const o=[];for(let i=0;i<a.length;i+=n)o.push(a.slice(i,i+n));return o};
-let sT=null,busy=false;
-function save(...what){what.forEach(w=>S.dirty[w]=true);snap();clearTimeout(sT);sT=setTimeout(flush,450);
+let sT=null,busy=false,snapT=null,renderT=null;
+function save(...what){what.forEach(w=>S.dirty[w]=true);clearTimeout(snapT);snapT=setTimeout(snap,650);clearTimeout(sT);sT=setTimeout(flush,450);
   if(!SANDBOX&&S.cloud.auto&&S.cloud.url) queuePush()}
 
 /*────── Google Apps Script bridge ──────*/
 let pT=null, pushing=false;
 function payload(){return{master:S.master,lines:S.lines,shelfDone:S.shelfDone,cfg:S.cfg,users:S.users,ccHistory:S.ccHistory}}
 function queuePush(){clearTimeout(pT);pT=setTimeout(()=>{cloudPush(true).catch(()=>{})},3500)}
-let syncPollT=null;
-function startCloudPolling(){
-  clearInterval(syncPollT);
-  syncPollT=setInterval(async()=>{
-    if(!S.booted||!S.me||!S.cloud.url||!S.cloud.key||pushing||Object.values(S.dirty).some(Boolean))return;
-    try{await cloudPull(true); if(S.view!=="scan"||!S.activeShelf) render();}catch(e){}
-  },5000);
-}
 function cloudChip(txt,cls){const c=$("#cloudChip");if(!c)return;
   c.className="chip"+(cls?" "+cls:"");c.textContent=txt}
 async function cloudCall(body,qs){
@@ -511,52 +510,49 @@ async function cloudPing(){
   const j=await cloudCall(null,"action=ping&key="+encodeURIComponent(S.cloud.key));
   S.cloud.err="";return j;
 }
-function mergeClientPayload(remote,local){
-  const r=remote||{}, l=local||{};
-  const byId=new Map();
-  (r.lines||[]).forEach(x=>byId.set(x.id||uid(),x));
-  (l.lines||[]).forEach(x=>byId.set(x.id||uid(),x));
-  const sd=Object.assign({},r.shelfDone||{},l.shelfDone||{});
-  const rc=r.cfg||{}, lc=l.cfg||{};
-  const sameCc=rc.ccId && lc.ccId && rc.ccId===lc.ccId;
-  let cfg;
-  if(rc.ccId && lc.ccId && rc.ccId!==lc.ccId){
-    const rt=Date.parse(rc.ccStartedAt||"")||0, lt=Date.parse(lc.ccStartedAt||"")||0;
-    cfg=Object.assign({}, rt>lt?rc:lc);
-  }else{
-    cfg=Object.assign({},rc,lc);
-    cfg.ccComplete=!!(rc.ccComplete||lc.ccComplete);
-    cfg.ccStatus=(cfg.ccComplete||rc.ccStatus==="CLOSED"||lc.ccStatus==="CLOSED")?"CLOSED":"OPEN";
-  }
-  cfg.deletedShelves=Object.assign({},rc.deletedShelves||{},lc.deletedShelves||{});
-  cfg.shelfLocks=sameCc?Object.assign({},rc.shelfLocks||{},lc.shelfLocks||{}):(cfg.shelfLocks||{});
-  const mm=new Map();
-  (r.master||[]).forEach(x=>mm.set([x.shelf,x.sku].join("\u0000"),x));
-  (l.master||[]).forEach(x=>mm.set([x.shelf,x.sku].join("\u0000"),x));
-  const deleted=cfg.deletedShelves||{};
-  const master=[...mm.values()].filter(x=>!deleted[x.shelf]);
-  const chosenCc=cfg.ccId||"";
-  let lines=[...byId.values()].filter(x=>!deleted[x.shelf]);
-  if(rc.ccId && lc.ccId && rc.ccId!==lc.ccId){
-    const source=(Date.parse(lc.ccStartedAt||"")||0) >= (Date.parse(rc.ccStartedAt||"")||0) ? l : r;
-    lines=(source.lines||[]).filter(x=>!deleted[x.shelf] && (!x.ccId || x.ccId===chosenCc));
-  }else if(chosenCc){
-    lines=lines.filter(x=>!x.ccId || x.ccId===chosenCc);
-  }
-  Object.keys(sd).forEach(k=>{if(deleted[k])delete sd[k]});
-  const hm=new Map();
-  (r.ccHistory||[]).forEach(x=>hm.set(x.id,x));
-  (l.ccHistory||[]).forEach(x=>hm.set(x.id,x));
-  const history=[...hm.values()].sort((a,b)=>String(a.closedAt||"").localeCompare(String(b.closedAt||"")));
-  return {master,lines,shelfDone:sd,cfg,users:l.users&&l.users.length?l.users:(r.users||[]),ccHistory:history};
+async function cloudPullMeta(silent){
+  if(SANDBOX||!S.cloud.url||!S.cloud.key)return null;
+  try{
+    const j=await cloudCall(null,"action=meta&key="+encodeURIComponent(S.cloud.key));
+    const d=j.data||{};
+    const remoteTask=String((d.cfg&&d.cfg.taskId)||"");
+    const localTask=String(S.cfg.taskId||"");
+    if(remoteTask && remoteTask!==localTask){
+      // A new upload is a hard task boundary. Replace local task data completely.
+      S.master=Array.isArray(d.master)?d.master:[];
+      S.lines=[];
+      S.shelfDone=migrate(d.shelfDone||{});
+      S.cfg=Object.assign(S.cfg,d.cfg||{});
+      S.activeShelf=null; S.editId=null;
+      rebuildIndexes(); snap();
+      if(!silent){toast("New audit task received from another user","good");render()}
+    }else{
+      // Same task: only synchronize shared ownership/completion metadata.
+      S.shelfDone=migrate(d.shelfDone||{});
+      S.cfg.shelfLocks=d.cfg&&d.cfg.shelfLocks?d.cfg.shelfLocks:{};
+      if(d.cfg&&d.cfg.taskStatus)S.cfg.taskStatus=d.cfg.taskStatus;
+      if(d.cfg&&d.cfg.taskCompletedAt)S.cfg.taskCompletedAt=d.cfg.taskCompletedAt;
+      snap();
+    }
+    S.cloud.lastPull=new Date().toISOString();S.cloud.err="";
+    return d;
+  }catch(e){S.cloud.err=e.message;return null}
 }
+let pullT=null;
+function startCloudPolling(){
+  clearInterval(pullT);
+  if(SANDBOX||!S.cloud.url||!S.cloud.key)return;
+  pullT=setInterval(()=>{cloudPullMeta(true).then(()=>{
+    if(S.view==="scan" && !S.activeShelf)render();
+  }).catch(()=>{})},5000);
+}
+/* Shared-task sync. Google Apps Script is the shared source for the current task.
+   New uploads replace the current task for everyone. Bin claims are checked
+   atomically by Apps Script. The browser polls shared task metadata so a bin
+   opened by one user becomes locked on the other users' devices. */
 async function cloudPush(silent){
   if(pushing)return; pushing=true; cloudChip("Sending…");
   try{
-    let latest={master:[],lines:[],shelfDone:{},cfg:{},users:[],ccHistory:[]};
-    try{const pj=await cloudCall(null,"action=pull&key="+encodeURIComponent(S.cloud.key));latest=pj.payload||latest}catch(e){}
-    const merged=mergeClientPayload(latest,payload());
-    S.master=merged.master;S.lines=merged.lines;S.shelfDone=migrate(merged.shelfDone);S.cfg=Object.assign(S.cfg,merged.cfg||{});S.users=merged.users||S.users;S.ccHistory=merged.ccHistory||S.ccHistory;
     const j=await cloudCall({key:S.cloud.key,action:"push",payload:payload()});
     S.cloud.lastPush=new Date().toISOString();S.cloud.err="";
     Object.keys(S.dirty).forEach(k=>S.dirty[k]=false);
@@ -568,15 +564,6 @@ async function cloudPush(silent){
     if(!silent)toast(e.message,"err");
     throw e;
   }finally{pushing=false}
-}
-async function cloudPull(silent){
-  const j=await cloudCall(null,"action=pull&key="+encodeURIComponent(S.cloud.key));
-  const p=j.payload||{};
-  if(!p.master&&!p.lines) throw new Error("The sheet has no saved count yet — push once first");
-  S.master=p.master||[];S.lines=p.lines||[];S.shelfDone=migrate(p.shelfDone||{});S.cfg=Object.assign(S.cfg,p.cfg||{});S.users=p.users||S.users;S.ccHistory=p.ccHistory||S.ccHistory;
-  S.cloud.lastPull=new Date().toISOString();S.cloud.err="";snap();
-  if(S.me)S.me=S.users.filter(u=>u.id===S.me.id)[0]||S.me;
-  if(!silent) render();
 }
 async function flush(){
   if(!DB||busy)return; busy=true;
@@ -615,10 +602,12 @@ async function boot(){
       ord(mc.docs).forEach(d=>{const r=d.data();if(r&&r.rows)m.push(...r.rows)});
       ord(lc.docs).forEach(d=>{const r=d.data();if(r&&r.rows)l.push(...r.rows)});
       if(m.length||l.length||st.exists||us.exists){
-        S.master=m;S.lines=l;
         const sd=st.exists?st.data():{};
+        const deleted=(sd.cfg&&sd.cfg.deletedShelves)||{};
+        S.master=m.filter(r=>!deleted[r.shelf]);S.lines=l.filter(x=>!deleted[x.shelf]);
         S.shelfDone=migrate(sd.shelfDone||{});S.cfg=Object.assign(S.cfg,sd.cfg||{});
         S.users=(us.exists&&us.data().list)||[];
+        rebuildIndexes();
         snap();
       }else if(S.master.length||S.lines.length||S.users.length){
         save("master","lines","state","users");
@@ -626,7 +615,12 @@ async function boot(){
     }catch(e){}
   }
   if(meId) S.me=S.users.find(u=>u.id===meId)||null;
-  ensureCc(); S.booted=true; render();
+  ensureTask();
+  if(!SANDBOX&&S.cloud.url&&S.cloud.key){
+    await cloudPullMeta(false);
+    startCloudPolling();
+  }
+  S.booted=true; render();
 }
 
 async function hash(pw){
@@ -671,6 +665,8 @@ const NAV=[
   {v:"users",t:"User Management",i:"♙",c:"c8"}
 ];
 const VIEWC={dash:"c1",setup:"c2",scan:"c3",search:"c4",life:"c5",summary:"c6",export:"c7",cloud:"c9",users:"c8"};
+function scheduleRender(){clearTimeout(renderT);renderT=setTimeout(()=>render(),140)}
+
 function render(){
   const root=$("#root");
   if(!S.booted){root.replaceChildren(el("div",{class:"gate"},el("p",{class:"muted",text:"Loading…"})));return}
@@ -795,69 +791,50 @@ function noData(msg){
     el("button",{class:"btn hv",onclick(){S.view="setup";render()}},"Go to upload"));
 }
 
-/*────── CYCLE CONTROL ──────*/
+/*────── AUDIT TASK CONTROL ──────*/
 function activeShelves(){return allShelves()}
-function makeCcId(){
+function makeTaskId(){
   const d=new Date(), ds=d.getFullYear()+String(d.getMonth()+1).padStart(2,"0")+String(d.getDate()).padStart(2,"0");
-  const n=(Number(S.cfg.ccSeq||0)+1); S.cfg.ccSeq=n;
-  return "CC-"+ds+"-"+String(n).padStart(3,"0");
+  const ts=String(d.getHours()).padStart(2,"0")+String(d.getMinutes()).padStart(2,"0")+String(d.getSeconds()).padStart(2,"0");
+  return "TASK-"+ds+"-"+ts;
 }
-function ensureCc(){
-  if(!S.cfg.ccId){
-    S.cfg.ccId=makeCcId(); S.cfg.ccStatus="OPEN"; S.cfg.ccComplete=false;
-    S.cfg.ccStartedAt=new Date().toISOString(); S.cfg.ccClosedAt="";
-    S.lines.forEach(l=>{if(!l.ccId)l.ccId=S.cfg.ccId});
+function ensureTask(){
+  if(!S.cfg.taskId){
+    S.cfg.taskId=makeTaskId(); S.cfg.taskStartedAt=new Date().toISOString();
+    S.cfg.taskStatus=S.master.length?"OPEN":"EMPTY"; S.cfg.taskCompletedAt="";
     save("state");
-  }else{
-    S.lines.forEach(l=>{if(!l.ccId)l.ccId=S.cfg.ccId});
   }
 }
-function ccReady(){const t=totals(); return t.shelves>0 && t.stats.every(s=>s.state==="done")}
-function archiveCurrentCc(){
-  const id=S.cfg.ccId||makeCcId(), idx=S.ccHistory.findIndex(x=>x.id===id);
-  const rec={id,job:S.cfg.job||"Stock Count",author:S.cfg.author||"",site:S.cfg.site||"",
-    startedAt:S.cfg.ccStartedAt||"",closedAt:new Date().toISOString(),closedBy:S.me?S.me.name:"",
-    master:JSON.parse(JSON.stringify(S.master)),lines:JSON.parse(JSON.stringify(S.lines)),
-    shelfDone:JSON.parse(JSON.stringify(S.shelfDone))};
-  if(idx>=0)S.ccHistory[idx]=rec;else S.ccHistory.push(rec);
-}
-function completeCycle(){
-  if(!S.me){toast("Sign in first","err");return}
-  if(!ccReady()){toast("Complete or delete every shelf before closing CC","err");return}
-  archiveCurrentCc(); S.cfg.ccComplete=true; S.cfg.ccStatus="CLOSED";
-  S.cfg.ccClosedAt=new Date().toISOString(); S.cfg.ccClosedBy=S.me.name; S.cfg.shelfLocks={};
-  save("state"); toast((S.cfg.ccId||"CC")+" closed. All shelf locks released.","good"); render();
-}
-function startNewCC(){
-  if(!S.me){toast("Sign in first","err");return}
-  if(!S.cfg.ccComplete){toast("Close the current CC first","err");return}
-  S.lines=[]; S.shelfDone={}; S.cfg.shelfLocks={}; S.cfg.deletedShelves={};
-  S.cfg.ccId=makeCcId(); S.cfg.ccStatus="OPEN"; S.cfg.ccComplete=false;
-  S.cfg.ccStartedAt=new Date().toISOString(); S.cfg.ccClosedAt=""; S.cfg.ccClosedBy="";
-  S.activeShelf=null;S.editId=null; save("lines","state");
-  toast(S.cfg.ccId+" created. All shelves are released.","good"); render();
-}
-function deleteShelf(shelf){
-  if(!S.me){toast("Sign in first","err");return}
-  if(S.cfg.ccComplete){toast("Current CC is already completed. Create a new CC first.","err");return}
-  const st=shelfStat(shelf);
-  if(st.done){toast("A completed shelf can't be deleted — reopen it first if you need to change it","err");return}
-  S.master=S.master.filter(r=>r.shelf!==shelf); S.lines=S.lines.filter(l=>l.shelf!==shelf);
-  delete S.shelfDone[shelf]; if(S.cfg.shelfLocks)delete S.cfg.shelfLocks[shelf];
-  S.cfg.deletedShelves=S.cfg.deletedShelves||{}; S.cfg.deletedShelves[shelf]=true;
-  if(S.activeShelf===shelf)S.activeShelf=null;
-  save("master","lines","state");toast("Shelf "+shelf+" deleted from current CC","good");render();
+function taskReady(){const t=totals(); return t.shelves>0 && t.stats.every(s=>s.state==="done")}
+function autoCompleteTask(){
+  if(!taskReady() || S.cfg.taskStatus==="COMPLETE")return false;
+  S.cfg.taskStatus="COMPLETE"; S.cfg.taskCompletedAt=new Date().toISOString();
+  S.cfg.shelfLocks={}; save("state");
+  return true;
 }
 function cycleControl(host,t){
-  ensureCc(); const ready=ccReady(), closed=!!S.cfg.ccComplete;
+  ensureTask();
+  const ready=taskReady(), complete=S.cfg.taskStatus==="COMPLETE";
   const bar=el("div",{class:"cycle-bar"},
-    el("div",{},el("span",{class:"state",text:closed?"✓ CC Closed":ready?"✓ All shelves completed":"Cycle Count in progress"}),
-      el("div",{class:"hint",text:(S.cfg.ccId||"CC")+" · "+(closed?"Closed — all shelf locks released":"Open for scanning")})),
+    el("div",{},el("span",{class:"state",text:complete?"✓ Task Completed":ready?"✓ All Bins Completed":"Audit Task in Progress"}),
+      el("div",{class:"hint",text:(S.cfg.taskId||"Task")+" · "+(S.cfg.taskStartedAt?tstamp(S.cfg.taskStartedAt):"—")+(complete&&S.cfg.taskCompletedAt?" · Completed "+tstamp(S.cfg.taskCompletedAt):"")})),
     el("div",{class:"compact-actions"},
-      closed?tapTwice("btn hv","Create New CC",startNewCC,{disabled:!isAdmin(),title:!isAdmin()?"Only an admin can start a new cycle (it resets the count)":""}):
-      tapTwice("btn ok","Close CC",completeCycle,{disabled:!ready,title:!ready?"Complete or delete every shelf first":""}),
-      !closed?el("button",{class:"btn ghost sm",onclick(){S.view="scan";S.filter="pending";render()}},"Open Pending Shelves"):null));
+      el("button",{class:"btn ghost sm",onclick(){S.view="setup";render()}},"Upload New Bins"),
+      !complete?el("button",{class:"btn ghost sm",onclick(){S.view="scan";S.filter="pending";render()}},"Open Pending Bins"):null));
   host.append(bar);
+}
+/* Legacy CC functions intentionally disabled. A new upload creates a new task. */
+function completeCycle(){toast("Task completion is automatic. Upload new bins to create the next task.","good")}
+function startNewCC(){toast("Upload new bins to create a new task.","good")}
+function deleteShelf(shelf){
+  if(!S.me){toast("Sign in first","err");return}
+  if(S.cfg.taskStatus==="COMPLETE"){toast("Task is already completed. Upload new bins to create a new task.","err");return}
+  const st=shelfStat(shelf);
+  if(st.done){toast("A completed bin can't be deleted — reopen it first if needed","err");return}
+  S.master=S.master.filter(r=>r.shelf!==shelf); S.lines=S.lines.filter(l=>l.shelf!==shelf); rebuildIndexes();
+  delete S.shelfDone[shelf]; if(S.cfg.shelfLocks)delete S.cfg.shelfLocks[shelf];
+  if(S.activeShelf===shelf)S.activeShelf=null;
+  save("master","lines","state");toast("Bin "+shelf+" deleted from current task","good");render();
 }
 /*────── DASHBOARD ──────*/
 function vDash(host,t){
@@ -872,12 +849,10 @@ function vDash(host,t){
     el("div",{class:"welcome-badge",text:"Accurate Inventory · Stronger Operations"}));
   host.append(welcome);
   host.append(el("div",{class:"cycle-bar"},
-    el("div",{},el("span",{class:"state",text:S.cfg.ccComplete?"✓ Audit Completed":readyState(t)?"✓ Ready to Complete":"● Audit in Progress"}),
-      el("div",{class:"hint",text:S.cfg.ccComplete?"All data is locked":"Complete all shelves or delete unused shelves"})),
+    el("div",{},el("span",{class:"state",text:S.cfg.taskStatus==="COMPLETE"?"✓ Audit Completed":readyState(t)?"✓ All Bins Completed":"● Audit In Progress"}),
+      el("div",{class:"hint",text:S.cfg.taskStatus==="COMPLETE"?"All bins are completed":"New task is created only when a new bin list is uploaded"})),
     el("div",{class:"compact-actions"},
-      el("button",{class:"btn hv",onclick(){S.view="setup";render()}},"Download / Upload"),
-      tapTwice("btn ok","Complete Audit",completeCycle,{disabled:S.cfg.ccComplete||!readyState(t),
-        title:!readyState(t)?"Complete or delete every shelf first":""}))));
+      el("button",{class:"btn hv",onclick(){S.view="setup";render()}},"Upload New Bins"))));
   host.append(el("div",{class:"tiles"},
     tile("Total Shelves",fmt(t.shelves),fmt(t.done)+" completed","b"),
     tile("Scanned Shelves",fmt(t.done),pct.toFixed(1)+"% complete","g"),
@@ -913,7 +888,7 @@ function vDash(host,t){
   const reports=el("div",{class:"card"});reports.append(el("div",{class:"row",style:"justify-content:space-between"},el("h3",{text:"Quick Report Downloads"}),el("button",{class:"btn ghost sm",onclick(){S.view="export";render()}},"View All →")));
   const rl=el("div",{class:"report-list"});[["Scan Data","csvScans","SCAN-DATA.csv"],["Bin Summary","csvBins","BIN-SUMMARY.csv"],["SKU Summary","csvSkus","SKU-SUMMARY.csv"],["Shelf Life","csvBrackets","SHELF-LIFE.csv"],["Final Report","csvFullReport","FINAL-REPORT.csv"]].forEach(([label,fn,file])=>rl.append(el("div",{class:"report-row"},el("span",{class:"report-name",text:label}),el("button",{class:"btn hv",onclick(){if(typeof window[fn]==="function")download(file,toCsv(window[fn]()))}},"Download"))));reports.append(rl);
 
-  const sys=el("div",{class:"card"});sys.append(el("h3",{text:"System Information"}));sys.append(el("div",{style:"font-size:12px;line-height:2"},el("div",{},"Total Users: ",el("b",{text:fmt(S.users.length)})),el("div",{},"Active User: ",el("b",{text:S.me.name})),el("div",{},"CC ID: ",el("b",{text:S.cfg.ccId||"—"})),el("div",{},"My Scanned Qty: ",el("b",{text:fmt(myQty)})),el("div",{},"Cloud: ",el("b",{text:S.cloud.url&&!S.cloud.err?"Synced":"Local / Not linked"})),el("div",{class:"sync-ok",style:"margin-top:8px"},S.cloud.url&&!S.cloud.err?"Data synced across devices":"Ready for Google Sheet sync")));
+  const sys=el("div",{class:"card"});sys.append(el("h3",{text:"System Information"}));sys.append(el("div",{style:"font-size:12px;line-height:2"},el("div",{},"Total Users: ",el("b",{text:fmt(S.users.length)})),el("div",{},"Active User: ",el("b",{text:S.me.name})),el("div",{},"Task ID: ",el("b",{text:S.cfg.taskId||"—"})),el("div",{},"My Scanned Qty: ",el("b",{text:fmt(myQty)})),el("div",{},"Cloud: ",el("b",{text:S.cloud.url&&!S.cloud.err?"Synced":"Local / Not linked"})),el("div",{class:"sync-ok",style:"margin-top:8px"},S.cloud.url&&!S.cloud.err?"Data synced across devices":"Ready for Google Sheet sync")));
 
   const team=el("div",{class:"card"});
   team.append(el("div",{class:"row",style:"justify-content:space-between"},el("h3",{text:"Team Progress (User-wise)"}),
@@ -947,10 +922,32 @@ function vDash(host,t){
 }
 function readyState(t){return t.shelves>0&&t.stats.every(s=>s.state==="done")}
 
-function downloadCategoryTemplate(){
-  S.cfg.templateDownloaded=true; save("state");
-  const rows=[["Category","Shelf","SKU","Qty"],["Apparel","A-01-01","SKU-1001",10],["Cosmetics","A-01-02","SKU-2001",5],["Electronics","A-01-03","SKU-3001",8]];
-  download("CYCLE-COUNT-CATEGORY-TEMPLATE.csv",toCsv(rows));
+async function downloadCategoryTemplate(){
+  // Template download must work directly in the browser; do not depend on the
+  // optional Downloads helper, which may not be available in every deployment.
+  S.cfg.templateDownloaded=true;
+  save("state");
+  const rows=[["Category","Shelf","SKU","Qty"],
+    ["Apparel","A-01-01","SKU-1001",10],
+    ["Cosmetics","A-01-02","SKU-2001",5],
+    ["Electronics","A-01-03","SKU-3001",8]];
+  const csv="\uFEFF"+toCsv(rows);
+  try{
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download="STOCK-AUDIT-WMS-TEMPLATE.csv";
+    a.style.display="none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1500);
+    toast("Template downloaded","good");
+    render();
+  }catch(e){
+    toast("Template download failed — please try again","err");
+  }
 }
 
 /*────── SETUP ──────*/
@@ -990,14 +987,25 @@ function vSetup(host,t){
     el("label",{class:"f"},el("span",{text:"Paste rows, or load a CSV"}),ta),
     el("div",{class:"row",style:"margin-top:10px"},
       el("button",{class:"btn ghost",onclick:()=>file.click()},"Choose CSV file"),
-      el("button",{class:"btn hv",onclick(){
+      el("button",{class:"btn hv",onclick:async function(){
         if(!P){toast("Nothing to load","err");return}
-        if(S.cfg.ccComplete){toast("Create a new CC before adding stock rows","err");return}
-        const mm=new Map(S.master.map(r=>[[r.shelf,r.sku].join("\u0000"),r]));
-        P.rows.forEach(r=>mm.set([r.shelf,r.sku].join("\u0000"),r));
-        S.master=[...mm.values()]; S.cfg.deletedShelves={};
-        save("master","state");toast(fmt(P.rows.length)+" rows added/updated","good");
-        S.view="scan";render()}},S.master.length?"Add / Update Stock List":"Create Count Task"),file),
+        const oldTask=S.cfg.taskId||"";
+        const now=new Date();
+        const shelves=[...new Set(P.rows.map(r=>r.shelf))];
+        const taskId=makeTaskId();
+        const nextCfg=Object.assign({},S.cfg,{taskId,taskStartedAt:now.toISOString(),taskStatus:"OPEN",taskCompletedAt:"",previousTaskId:oldTask,deletedShelves:{},shelfLocks:{}});
+        try{
+          if(!SANDBOX&&S.cloud.url&&S.cloud.key){
+            await cloudCall({key:S.cloud.key,action:"uploadTask",task:{master:P.rows.map(r=>Object.assign({},r)),cfg:nextCfg,shelfDone:{}}});
+          }
+          S.master=P.rows.map(r=>Object.assign({},r));
+          S.lines=[]; S.shelfDone={}; S.cfg=nextCfg;
+          S.activeShelf=null; S.editId=null; rebuildIndexes();
+          save("master","lines","state");
+          toast("New audit task created and shared · "+shelves.length+" bins · "+now.toLocaleString("en-IN"),"good");
+          S.view="scan";render();
+        }catch(e){toast("Task upload failed: "+(e.message||"Please check Google sync"),"err")}
+      }},"Create New Audit Task"),file),
     out);
   host.append(c1);
 
@@ -1005,7 +1013,7 @@ function vSetup(host,t){
   c2.append(el("h3",{text:"3 · Count details"}));
   const mk=(lab,val,ph,on,type)=>el("label",{class:"f"},el("span",{text:lab}),
     el("input",{type:type||"text",value:val,placeholder:ph,oninput:on}));
-  c2.append(el("div",{class:"card",style:"margin:0 0 10px;background:var(--panel-2)"},el("div",{class:"code",text:"Current CC ID: "+(S.cfg.ccId||"—")}),el("div",{class:"hint",text:S.cfg.ccComplete?"Closed":"Open"})));
+  c2.append(el("div",{class:"card",style:"margin:0 0 10px;background:var(--panel-2)"},el("div",{class:"code",text:"Current Audit Task: "+(S.cfg.taskId||"—")}),el("div",{class:"hint",text:S.cfg.taskStartedAt?"Started "+tstamp(S.cfg.taskStartedAt):"No task yet"})));
   c2.append(el("div",{class:"oner",style:"grid-template-columns:repeat(auto-fit,minmax(190px,1fr))"},
     mk("Count reference",S.cfg.job,"Cycle count — Zone A — wk 38",e=>{S.cfg.job=e.target.value;save("state")}),
     mk("Author name",S.cfg.author,"Arvind Kumar",e=>{S.cfg.author=e.target.value;save("state")}),
@@ -1077,7 +1085,7 @@ function shelfCategory(shelf){
   return cats.length?cats[0]:"APPAREL";
 }
 function skuCategory(shelf,sku){
-  const row=S.master.find(r=>r.shelf===shelf&&r.sku===sku);
+  const row=S.idx.masterSku.get(String(shelf)+"\u0000"+String(sku));
   return row&&row.category?norm(row.category):shelfCategory(shelf);
 }
 function categoryLabel(c){const x=norm(c);return x?x.charAt(0)+x.slice(1).toLowerCase():"Apparel"}
@@ -1085,14 +1093,16 @@ function isCosmetics(c){return norm(c)==="COSMETICS"}
 function shelfLock(shelf){return (S.cfg.shelfLocks||{})[shelf]||null}
 function myShelfLock(shelf){const x=shelfLock(shelf);return x&&x.by===S.me.id}
 async function claimShelf(shelf){
-  if(S.cfg.ccComplete)throw new Error("Cycle count is completed");
+  if(S.cfg.taskStatus==="COMPLETE")throw new Error("Audit task is completed. Upload new bins for the next task.");
   const lock=shelfLock(shelf);
   if(lock&&lock.by!==S.me.id)throw new Error("This shelf is already locked by another user");
   if(lock&&lock.by===S.me.id)return true;
   if(!SANDBOX&&S.cloud.url&&S.cloud.key){
     try{
-      const j=await cloudCall({key:S.cloud.key,action:"claim",shelf:shelf,user:{id:S.me.id,name:S.me.name}});
-      const p=j.payload||{};S.shelfDone=migrate(p.shelfDone||S.shelfDone);S.cfg=Object.assign(S.cfg,p.cfg||{});snap();return true;
+      const j=await cloudCall({key:S.cloud.key,action:"claim",taskId:S.cfg.taskId,shelf:shelf,user:{id:S.me.id,name:S.me.name}});
+      S.cfg.shelfLocks=S.cfg.shelfLocks||{};
+      S.cfg.shelfLocks[shelf]=(j.lock||{by:S.me.id,byName:S.me.name,at:new Date().toISOString()});
+      save("state");return true;
     }catch(e){toast(e.message,"err");return false}
   }
   S.cfg.shelfLocks=S.cfg.shelfLocks||{};S.cfg.shelfLocks[shelf]={by:S.me.id,byName:S.me.name,at:new Date().toISOString()};save("state");return true;
@@ -1101,17 +1111,17 @@ function releaseShelfLock(shelf){
   if(!S.cfg.shelfLocks)return;
   if(isAdmin()||myShelfLock(shelf)){delete S.cfg.shelfLocks[shelf];save("state")}
 }
-function categoryScanCount(shelf,sku){return S.lines.filter(l=>l.shelf===shelf&&l.sku===sku).reduce((a,l)=>a+num(l.qty),0)}
-function systemSkuQty(shelf,sku){return S.master.filter(r=>r.shelf===shelf&&r.sku===sku).reduce((a,r)=>a+num(r.qty),0)}
+function categoryScanCount(shelf,sku){let n=0;for(const l of lineRows(shelf))if(l.sku===sku)n+=num(l.qty);return n}
+function systemSkuQty(shelf,sku){let n=0;for(const r of masterRows(shelf))if(r.sku===sku)n+=num(r.qty);return n}
 function appendScan(shelf,sku,extra){
   const category=extra.category||skuCategory(shelf,sku), key=(l)=>l.shelf===shelf&&l.sku===sku&&norm(l.category||category)===norm(category)&&String(l.batch||"")===String(extra.batch||"")&&String(l.mfg||"")===String(extra.mfg||"")&&String(l.exp||"")===String(extra.exp||"");
   const inc=Math.max(1,Math.floor(num(extra.qty))||1);
-  let row=S.lines.find(key);
+  let row=null; for(const l of lineRows(shelf)){if(key(l)){row=l;break}}
   if(row){row.qty=num(row.qty)+inc;row.ts=new Date().toISOString();row.lastBy=S.me.id;row.lastByName=S.me.name;row.byNames=Array.from(new Set([...(row.byNames||[]),S.me.name]));
     row.userQty=row.userQty||{};row.userQty[S.me.id]=num(row.userQty[S.me.id])+inc;
   }else{
     row={id:uid(),ccId:S.cfg.ccId||"",shelf,sku,category,batch:extra.batch||"",mfg:extra.mfg||"",exp:extra.exp||"",qty:inc,ts:new Date().toISOString(),by:S.me.id,byName:S.me.name,byNames:[S.me.name],userQty:{}};
-    row.userQty[S.me.id]=inc;S.lines.push(row);
+    row.userQty[S.me.id]=inc;S.lines.push(row); if(!S.idx.lineShelf.has(shelf))S.idx.lineShelf.set(shelf,[]); S.idx.lineShelf.get(shelf).push(row); S.idx.lineKey.set(String(row.id),row);
   }
   save("lines");
 }
@@ -1123,9 +1133,9 @@ function userVisibleLines(){
 /*────── SCAN ──────*/
 function vScan(host,t){
   cycleControl(host,t);
-  if(S.cfg.ccComplete){
-    host.append(el("div",{class:"banner",text:(S.cfg.ccId||"CC")+" is closed. All shelf locks are released. Create a New CC to scan again."}));
-    if(isAdmin())host.append(tapTwice("btn hv","Create New CC",startNewCC));
+  if(S.cfg.taskStatus==="COMPLETE"){
+    host.append(el("div",{class:"banner",text:"This audit task is completed. Upload new bins to create the next task."}));
+    host.append(el("button",{class:"btn hv",onclick(){S.view="setup";render()}},"Upload New Bins"));
     return
   }
   if(!S.master.length){host.append(el("h2",{text:"Scan & count"}),noData("No count task loaded"));return}
@@ -1146,7 +1156,7 @@ function vScan(host,t){
       const hit=t.stats.filter(s=>s.shelf===v)[0]||t.stats.filter(s=>flat(s.shelf)===flat(v))[0];
       if(!hit){toast("Shelf "+v+" is not in this count","err");jump.select();return}
       if(hit.done){toast("Shelf "+v+" is already completed and locked","err");jump.select();return}
-      if(S.cfg.ccComplete){toast("Cycle count is completed","err");jump.select();return}
+      if(S.cfg.taskStatus==="COMPLETE"){toast("Audit task is completed. Upload new bins for the next task.","err");jump.select();return}
       jump.value=""; (async()=>{ if(!(await claimShelf(hit.shelf))) return; S.activeShelf=hit.shelf;S.editId=null;render() })()}});
   host.append(el("div",{class:"card"},el("label",{class:"f"},el("span",{text:"Shelf scan"}),jump)));
   setTimeout(()=>jump.focus(),30);
@@ -1168,7 +1178,7 @@ function vScan(host,t){
     list.forEach(s=>{const p=s.skuTotal?Math.min(100,s.skuCounted/s.skuTotal*100):(s.lines?100:0);
       const card=el("div",{class:"shcard "+s.state});
       card.append(
-        tapTwice("btn ghost sm","Delete",()=>deleteShelf(s.shelf),{disabled:s.done||S.cfg.ccComplete,
+        tapTwice("btn ghost sm","Delete",()=>deleteShelf(s.shelf),{disabled:s.done||S.cfg.taskStatus==="COMPLETE",
           title:s.done?"Reopen the shelf first":"",style:"float:right"}),
         el("div",{class:"id",text:s.shelf}),
         el("div",{class:"mt",text:s.skuCounted+"/"+s.skuTotal+" SKU · sys "+fmt(s.sysQty)}),
@@ -1177,7 +1187,7 @@ function vScan(host,t){
           el("span",{class:"tag "+(s.state==="done"?"ok":s.state==="part"?"warn":"idle"),text:s.state==="done"?"Completed":s.state==="part"?"In progress":"Pending"}),
           s.lines?el("span",{class:"code",style:"color:var(--ink-2)",text:fmt(s.cntQty)+(s.done?" ("+sgn(s.diff)+")":"")}):null),
         s.by?el("div",{class:"mt",style:"margin:5px 0 0",text:"by "+s.by}):null,
-        el("button",{class:"btn ghost block",style:"margin-top:6px",disabled:s.done||S.cfg.ccComplete,onclick(){if(!s.done){(async()=>{if(!(await claimShelf(s.shelf)))return;S.activeShelf=s.shelf;S.editId=null;render()})()}}},s.done?"Completed & Locked":"Open Shelf")
+        el("button",{class:"btn ghost block",style:"margin-top:6px",disabled:s.done||S.cfg.taskStatus==="COMPLETE",onclick(){if(!s.done){(async()=>{if(!(await claimShelf(s.shelf)))return;S.activeShelf=s.shelf;S.editId=null;render()})()}}},s.done?"Completed & Locked":"Open Shelf")
       );
       grid.append(card);
     });
@@ -1191,10 +1201,10 @@ function scanShelf(host){
   if(lock&&lock.by!==S.me.id){
     host.append(el("div",{class:"mode-banner"},el("div",{},el("strong",{text:"Shelf locked"}),el("div",{class:"hint",text:isAdmin()?"Locked by "+(lock.byName||"another user"):"This shelf is already assigned to another user."})),el("span",{class:"category-badge",text:categoryLabel(category)})));return;
   }
-  const mRows=S.master.filter(r=>r.shelf===shelf);
+  const mRows=masterRows(shelf);
   const skuIdx=new Map(mRows.map(r=>[r.sku,r]));
   const locked=st.done;
-  if(S.cfg.ccComplete){host.append(el("div",{class:"banner",text:"Cycle count completed — this shelf is locked."}));return}
+  if(S.cfg.taskStatus==="COMPLETE"){host.append(el("div",{class:"banner",text:"Audit task completed — this bin is locked."}));return}
 
   host.append(el("div",{class:"row",style:"margin-bottom:10px"},
     el("button",{class:"btn ghost sm",onclick(){S.activeShelf=null;S.editId=null;render()}},"← All shelves"),
@@ -1225,15 +1235,77 @@ function scanShelf(host){
   host.append(shelfRecon(shelf,st,locked));
 }
 
+function editScanLine(id){
+  const l=S.lines.find(x=>x.id===id);
+  if(!l){toast("Entry not found","err");return}
+  if(S.shelfDone[l.shelf]){toast("Submit ho chuka hai. Reopen shelf first.","err");return}
+  if(!isAdmin() && l.by!==S.me.id){toast("Only your own entry can be edited","err");return}
+  const qty=prompt("Enter physical quantity",String(l.qty));
+  if(qty===null)return;
+  const q=Math.floor(num(qty));
+  if(q<0){toast("Quantity cannot be negative","err");return}
+  const batch=prompt("Batch",l.batch||""); if(batch===null)return;
+  const mfg=prompt("MFG (YYYY-MM-DD)",l.mfg||""); if(mfg===null)return;
+  const exp=prompt("Expiry (YYYY-MM-DD)",l.exp||""); if(exp===null)return;
+  l.qty=q; l.batch=batch.trim(); l.mfg=mfg; l.exp=exp;
+  l.lastBy=S.me.id; l.lastByName=S.me.name; l.ts=new Date().toISOString();
+  if(l.userQty){ l.userQty[l.by||S.me.id]=q; }
+  save("lines"); toast("Entry updated","good"); render();
+}
+function deleteScanLine(id){
+  const l=S.lines.find(x=>x.id===id);
+  if(!l){toast("Entry not found","err");return}
+  if(S.shelfDone[l.shelf]){toast("Submit ho chuka hai. Reopen shelf first.","err");return}
+  if(!isAdmin() && l.by!==S.me.id){toast("Only your own entry can be deleted","err");return}
+  if(!confirm("Delete this scan entry?"))return;
+  S.lines=S.lines.filter(x=>x.id!==id); rebuildIndexes();
+  save("lines"); toast("Entry deleted","good"); render();
+}
+
+function editScanLine(id){
+  const l=S.lines.find(x=>x.id===id);
+  if(!l){toast("Scan entry not found","err");return}
+  if(S.shelfDone[l.shelf]){toast("This bin is already submitted","err");return}
+  if(!canTouch(l)){toast("You can edit only your own scan entry","err");return}
+  const mine=l.userQty?num(l.userQty[S.me.id]):(l.by===S.me.id?num(l.qty):0);
+  if(mine<=0){toast("No editable quantity for your user","err");return}
+  const q=prompt("Enter revised quantity for "+l.sku+":",String(mine));
+  if(q===null)return;
+  const nq=Math.floor(num(q));
+  if(nq<1){toast("Quantity must be at least 1","err");return}
+  const delta=nq-mine;
+  l.userQty=l.userQty||{}; l.userQty[S.me.id]=nq;
+  l.qty=Math.max(0,num(l.qty)+delta);
+  l.ts=new Date().toISOString(); l.lastBy=S.me.id; l.lastByName=S.me.name;
+  save("lines");toast("Scan entry updated","good");render();
+}
+function deleteScanLine(id){
+  const l=S.lines.find(x=>x.id===id);
+  if(!l){toast("Scan entry not found","err");return}
+  if(S.shelfDone[l.shelf]){toast("This bin is already submitted","err");return}
+  if(!canTouch(l)){toast("You can delete only your own scan entry","err");return}
+  if(!confirm("Delete this scan entry for "+l.sku+"?"))return;
+  const mine=l.userQty?num(l.userQty[S.me.id]):(l.by===S.me.id?num(l.qty):0);
+  if(isAdmin() || mine>=num(l.qty)){
+    S.lines=S.lines.filter(x=>x.id!==id);
+  }else{
+    l.qty=Math.max(0,num(l.qty)-mine);
+    if(l.userQty)delete l.userQty[S.me.id];
+    l.byNames=(l.byNames||[]).filter(n=>n!==S.me.name);
+    if(l.qty<=0)S.lines=S.lines.filter(x=>x.id!==id);
+  }
+  save("lines");toast("Scan entry deleted","good");render();
+}
+
 function shelfLineTable(shelf,locked){
-  const rows=userVisibleLines().filter(l=>l.shelf===shelf);
+  const rows=(isAdmin()?lineRows(shelf):userVisibleLines().filter(l=>l.shelf===shelf));
   const card=el("div",{class:"card"});
   card.append(el("h3",{text:"Scan lines on "+shelf+" ("+rows.length+")"}));
   if(!rows.length){card.append(el("p",{class:"muted",text:"Nothing scanned on this shelf yet."}));return card}
   const tb=el("tbody");
   rows.slice().sort((a,b)=>String(b.ts||"").localeCompare(String(a.ts||""))).forEach(l=>{
     const L=life(l.mfg,l.exp);
-    const desc=(S.master.filter(r=>r.shelf===shelf&&r.sku===l.sku&&r.desc)[0]||{}).desc||"";
+    const desc=(S.idx.masterSku.get(String(shelf)+"\u0000"+String(l.sku))||{}).desc||"";
     const cat=l.category||skuCategory(shelf,l.sku);
     const who=(l.byNames&&l.byNames.length?l.byNames:[l.byName]).filter(Boolean).join(", ");
     tb.append(el("tr",{},
@@ -1248,20 +1320,24 @@ function shelfLineTable(shelf,locked){
       el("td",{class:"n",text:L?fmt(L.remDays):"—"}),
       el("td",{class:"n",style:"font-weight:600",text:fmt(l.qty)}),
       el("td",{text:who||"—"}),
-      el("td",{class:"code muted",text:tstamp(l.ts)})));
+      el("td",{class:"code muted",text:tstamp(l.ts)}),
+      el("td",{class:"nowrap"}, !locked ? [
+        el("button",{class:"btn ghost xs",style:"margin-right:4px",onclick(){editScanLine(l.id)}},"Edit"),
+        el("button",{class:"btn ghost xs",onclick(){deleteScanLine(l.id)}},"Delete")
+      ] : null)));
   });
   card.append(el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},
     el("th",{text:"SKU"}),el("th",{text:"Description"}),el("th",{text:"Category"}),
     el("th",{text:"Batch"}),el("th",{text:"MFG"}),el("th",{text:"Expiry"}),
     el("th",{class:"n",text:"Shelf life (mth)"}),el("th",{class:"n",text:"Current life %"}),
     el("th",{class:"n",text:"Current life (days)"}),el("th",{class:"n",text:"Qty"}),
-    el("th",{text:"Scanned by"}),el("th",{text:"Last scan"}))),tb)));
+    el("th",{text:"Scanned by"}),el("th",{text:"Last scan"}),el("th",{text:"Action"}))),tb)));
   return card;
 }
 
 function entryRow(shelf,skuIdx){
   const card=el("div",{class:"scan-focus"});
-  const targetRows=S.master.filter(r=>r.shelf===shelf), target=new Map();
+  const targetRows=masterRows(shelf), target=new Map();
   targetRows.forEach(r=>target.set(r.sku,(target.get(r.sku)||0)+num(r.qty)));
   const counted=sku=>categoryScanCount(shelf,sku);
   const title=el("div",{class:"mode-banner"},
@@ -1270,7 +1346,7 @@ function entryRow(shelf,skuIdx){
     el("span",{class:"category-badge",text:"SKU Category"}));
   card.append(title);
   const progress=el("div",{class:"tiles"},
-    tile("Units scanned",fmt(S.lines.filter(l=>l.shelf===shelf).reduce((a,l)=>a+l.qty,0)),"live"),
+    tile("Units scanned",fmt(lineRows(shelf).reduce((a,l)=>a+l.qty,0)),"live"),
     tile("System units",fmt(targetRows.reduce((a,r)=>a+num(r.qty),0)),"reference only","b"),
     tile("SKU lines",fmt(new Set(targetRows.map(r=>r.sku)).size),"master SKUs","y"));
   card.append(progress);
@@ -1357,8 +1433,8 @@ function entryRow(shelf,skuIdx){
     }
     appendScan(shelf,v,{category:cat,batch:batch.value.trim(),mfg:mfg.value||"",exp:exp.value||"",qty:q});
     batch.value="";mfg.value="";exp.value="";qty.value="1";sku.value="";extraWrap.style.display="none";add.style.display="none";
-    mode.className="hint ok";mode.textContent=fmt(q)+" pc saved. Scan the next SKU.";render();
-    setTimeout(()=>{const x=document.querySelector('.scan-input');if(x)x.focus()},40);
+    mode.className="hint ok";mode.textContent=fmt(q)+" pc saved. Scan the next SKU.";scheduleRender();
+    sku.focus();
   }
   setTimeout(()=>sku.focus(),40);
   return card;
@@ -1383,8 +1459,10 @@ function shelfRecon(shelf,st,locked){
       el("td",{text:who||"—"}),
       el("td",{},el("span",{class:"tag "+cls,text:lab})),
       el("td",{class:"n"}, locked?null:(!r.touched?el("button",{class:"btn ghost xs",onclick(){
-        S.lines.push({id:uid(),shelf:shelf,sku:r.sku,batch:"",mfg:"",exp:"",qty:0,
-          ts:new Date().toISOString(),by:S.me.id,byName:S.me.name,nil:true});
+        const nil={id:uid(),shelf:shelf,sku:r.sku,batch:"",mfg:"",exp:"",qty:0,
+          ts:new Date().toISOString(),by:S.me.id,byName:S.me.name,nil:true};
+        S.lines.push(nil);
+        if(!S.idx.lineShelf.has(shelf))S.idx.lineShelf.set(shelf,[]); S.idx.lineShelf.get(shelf).push(nil); S.idx.lineKey.set(String(nil.id),nil);
         save("lines");toast(r.sku+" marked nil");render()}},"Mark nil"):null))));
   });
   card.append(el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},
@@ -1401,11 +1479,12 @@ function shelfRecon(shelf,st,locked){
     tile("SKU still open",fmt(pend),pend?"will report as short":"all covered",pend?"r":"g")));
   if(!locked) card.append(el("div",{class:"row",style:"margin-top:12px"},
     el("button",{class:"btn ok",onclick(){
-      if(!st.lines){toast("Scan at least one entry before submitting","err");return}
-      if(pend&&!confirm(pend+" SKU on this shelf are not counted.\n\nSubmit anyway? They will be reported short."))return;
+      if(pend&&!confirm(pend+" SKU on this bin are not counted.\n\nSubmit anyway? They will be reported short."))return;
       S.shelfDone[shelf]={by:S.me.id,byName:S.me.name,at:new Date().toISOString()};
-      save("state");toast("Shelf "+shelf+" completed","good");
-      S.activeShelf=null;S.editId=null;render();window.scrollTo({top:0})}},"Submit shelf & scan next"),
+      save("state");
+      const finished=autoCompleteTask();
+      toast(finished?"All bins completed. Audit task is automatically closed.":"Bin "+shelf+" completed","good");
+      S.activeShelf=null;S.editId=null;render();window.scrollTo({top:0})}},"Submit bin & scan next"),
     el("button",{class:"btn ghost",onclick(){S.activeShelf=null;S.editId=null;render()}},"Leave open")));
   return card;
 }
@@ -1751,11 +1830,11 @@ async function download(filename,data){
 }
 const qc=v=>{const s=String(v==null?"":v);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 const toCsv=g=>g.map(r=>r.map(qc).join(",")).join("\n");
-const hdr=()=>[["Report",S.cfg.job||"Stock count"],["CC ID",S.cfg.ccId||""],["Author",S.cfg.author||""],["Site",S.cfg.site||""],
+const hdr=()=>[["Report",S.cfg.job||"Stock count"],["Task ID",S.cfg.taskId||""],["Author",S.cfg.author||""],["Site",S.cfg.site||""],
   ["Generated",new Date().toLocaleString("en-IN")],[]];
 function csvFullReport(){
   const sections=[
-    ["FINAL CYCLE COUNT REPORT"],
+    ["FINAL AUDIT TASK REPORT"],
     ...csvBins(),[],
     ["SKU SUMMARY"],...csvSkus(),[],
     ["SHELF LIFE"],...csvBrackets(),[],
@@ -1833,12 +1912,15 @@ function csvUsers(){
 /*────── CLOUD SYNC ──────*/
 function vCloud(host){
   host.append(el("h2",{text:"Google Sheets sync"}));
-  host.append(el("p",{class:"sub",text:"Link this app to a Google Apps Script web app. Every scan then lands in your spreadsheet, and the auto-mailer sends the report from there at a fixed time."}));
+  host.append(el("p",{class:"sub",text:"Link this app to the shared Google Apps Script backend. Any user can upload the current bin list, all users see the same bins, and once one user opens a bin it is locked for other users."}));
 
   if(SANDBOX){
     host.append(el("div",{class:"banner w",
       text:"You are running the copy hosted inside Claude, which is not allowed to call other websites. Put the index.html file on GitHub Pages and open that link — the same settings below will work there."}));
   }
+
+  host.append(el("div",{class:"banner",
+    text:"This app only ever sends data to the sheet — it never reads scan data back. That one-way design is deliberate: pulling data back in was what caused deleted shelves to silently reappear and a fresh Cycle Count to show old shelves as still pending. Each device now stays fully in charge of its own count; the sheet is a real-time mirror for reports, the mailer and the leaderboard, not a second source the app trusts back."}));
 
   const c=el("div",{class:"card"});
   c.append(el("h3",{text:"Connection"}));
@@ -1861,12 +1943,7 @@ function vCloud(host){
       catch(e){st.className="hint bad";st.textContent=e.message}}},"Test connection"),
     el("button",{class:"btn hv",async onclick(){
       st.className="hint";st.textContent="Sending…";
-      try{await cloudPush(false)}catch(e){st.className="hint bad";st.textContent=e.message}}},"Send now"),
-    el("button",{class:"btn ghost",async onclick(){
-      if(!confirm("Pull the count from the sheet?\n\nWhat is on this device is replaced by what is stored there."))return;
-      st.className="hint";st.textContent="Pulling…";
-      try{await cloudPull();toast("Pulled from Google","good");render()}
-      catch(e){st.className="hint bad";st.textContent=e.message}}},"Pull from sheet")),st);
+      try{await cloudPush(false)}catch(e){st.className="hint bad";st.textContent=e.message}}},"Send now")),st);
   if(S.cloud.err) c.append(el("p",{class:"hint bad",text:"Last error: "+S.cloud.err}));
   host.append(c);
 
@@ -1874,19 +1951,23 @@ function vCloud(host){
     tile("Link status",S.cloud.url?(S.cloud.err?"Error":"Linked"):"Not set",
       S.cloud.url?"web app configured":"paste the /exec URL",S.cloud.err?"r":S.cloud.url?"g":""),
     tile("Last sent",S.cloud.lastPush?tstamp(S.cloud.lastPush):"—","scan data to Sheets","b"),
-    tile("Last pulled",S.cloud.lastPull?tstamp(S.cloud.lastPull):"—","count restored from Sheets","b"),
     tile("Auto send",S.cloud.auto?"On":"Off",S.cloud.auto?"a few seconds after each change":"manual only",
       S.cloud.auto?"g":"y")));
 
   host.append(el("div",{class:"card"},el("h3",{text:"What lands in the spreadsheet"}),
-    el("p",{class:"sub",style:"margin-bottom:8px",text:"Each push rebuilds five tabs so your charts and pivots keep pointing at the same cells:"}),
+    el("p",{class:"sub",style:"margin-bottom:8px",text:"Each push merges into the sheet (it never removes another device's work) and rebuilds six tabs so your charts and pivots keep pointing at the same cells:"}),
     el("ul",{style:"margin:0;padding-left:20px;color:var(--ink-2)"},
       el("li",{text:"Scan Data — every entry with shelf life, current life % and days, and the user who scanned it"}),
       el("li",{text:"Bin Summary — shelf-wise system vs physical and who submitted it"}),
       el("li",{text:"SKU Summary — SKU-wise totals across the warehouse"}),
       el("li",{text:"Shelf Life — the four brackets plus the SKU split inside each"}),
-      el("li",{text:"Users — per-user entries, quantity and shelves submitted"})),
-    el("p",{class:"hint",text:"A sixth tab, Mail List, is where you put the email IDs that get the scheduled report."})));
+      el("li",{text:"Users — per-user entries, quantity and shelves submitted"}),
+      el("li",{text:"CC History — every closed Cycle Count with its totals"})),
+    el("p",{class:"hint",text:"A seventh tab, Mail List, is where you put the email IDs that get the scheduled report."})));
+
+  host.append(el("div",{class:"card"},el("h3",{text:"Using more than one phone"}),
+    el("p",{class:"sub",style:"margin-bottom:0",
+      text:"Set up each phone the same way: link the same Web app URL and secret, upload the master stock list, and create each operator's login on that phone. Every phone then pushes its own scans to the same sheet, and the sheet's reports combine everyone's work — but no phone ever reads another phone's data back, so one person's deletes, edits, or a fresh Cycle Count can never silently change what another person sees on their screen."})));
 
   host.append(el("details",{class:"help"},el("summary",{text:"Setup in short"}),
     el("p",{html:"1. New Google Sheet → Extensions → Apps Script → paste <code>Code.gs</code> → set your own <code>SECRET</code>."}),
@@ -1975,7 +2056,8 @@ function vUsers(host){
 }
 
 window.addEventListener("beforeunload",snap);
-render(); boot().then(()=>startCloudPolling()).catch(()=>{});
+render(); boot();
+window.addEventListener("pagehide",()=>{try{snap()}catch(e){}});
 </script>
 </body>
 </html>
