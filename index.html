@@ -339,7 +339,9 @@ input,select,textarea{background:#fff;border:1px solid #ccd9e6;border-radius:8px
   P[m]=function(...a){return o.apply(this,a.filter(x=>x!=null&&x!==false))}}}})();
 const APP="Stock Audit WMS", LS="wms.sc.v3", LS_OLD="wms.sc.v2";
 /* Paste your Apps Script /exec URL once here and every phone/PC opens already linked. */
-const DEFAULT_CLOUD={url:"https://script.google.com/macros/s/AKfycbydpz7mbrqagxUFpW5S-o88RdnIcmsKqoH5z6525RW4aWEHNSh-6lXwvZxx_sHCc_fw/exec",key:"ARVIND_WMS_2026"};
+/* DEFAULT_CLOUD.v: change it whenever the URL below changes - every device then drops its old saved URL and uses this one. */
+const DEFAULT_CLOUD={url:"https://script.google.com/macros/s/AKfycbzSH2QcuS4pQ9Bc_BuWP9Mn8w1E6mbdguWO4vfLl7i-6UPDSsPJex_H59k-X6uSQhXX/exec",key:"ARVIND_WMS_2026",v:"2026-10-22-b"};
+const BUILD="2026-10-22-b";
 const BRACKETS=[
   {k:"b60",label:"Above 60%",min:60,max:Infinity,cls:"ok",   note:"Fresh stock"},
   {k:"b40",label:"40% to 60%",min:40,max:60,     cls:"info", note:"Normal rotation"},
@@ -351,7 +353,7 @@ const bracketOf=p=>BRACKETS.find(b=>p>=b.min&&p<b.max)||BRACKETS[3];
 const S={
   master:[], lines:[], shelfDone:{}, users:[], ccHistory:[],
   cfg:{minLifePct:50, job:"", author:"Arvind Kumar", site:"", taskId:"", taskStatus:"EMPTY", taskStartedAt:"", taskCompletedAt:"", previousTaskId:"", deletedShelves:{},shelfLocks:{}},
-  cloud:{url:DEFAULT_CLOUD.url, key:DEFAULT_CLOUD.key, auto:true, lastPush:"", lastPull:"", err:"", migrated:false},
+  cloud:{url:DEFAULT_CLOUD.url, key:DEFAULT_CLOUD.key, defV:DEFAULT_CLOUD.v, auto:true, lastPush:"", lastPull:"", err:"", migrated:false},
   me:null, view:"dash", activeShelf:null, editId:null,
   idx:{masterShelf:new Map(), masterSku:new Map(), lineShelf:new Map(), lineKey:new Map()},
   filter:"all", q:"", bkFilter:"all", searchQ:"",
@@ -510,7 +512,10 @@ async function loadLocal(){
   S.master=master||[];S.lines=lines||[];S.users=d.users||[];S.ccHistory=Array.isArray(d.ccHistory)?d.ccHistory:[];
   S.shelfDone=migrate(d.shelfDone||{});S.cfg=Object.assign(S.cfg,d.cfg||{});
   S.cloud=Object.assign(S.cloud,d.cloud||{});
+  S.cloud.defV=(d.cloud&&d.cloud.defV)||"";   // saved settings from before this build have no default-version stamp
   if(!S.cloud.url)S.cloud.url=DEFAULT_CLOUD.url; if(!S.cloud.key)S.cloud.key=DEFAULT_CLOUD.key;
+  /* a newer default URL beats whatever this device saved earlier (e.g. the previous Apps Script project) */
+  if(DEFAULT_CLOUD.url&&S.cloud.defV!==DEFAULT_CLOUD.v){S.cloud.url=DEFAULT_CLOUD.url;S.cloud.key=DEFAULT_CLOUD.key;S.cloud.defV=DEFAULT_CLOUD.v;S.cloud.serverVer="";S.cloud.err="";S.cloud.sheetName="";}
   rebuildIndexes();loadSync();
   if(legacy){BIG.m=BIG.l=true;snap()}
   return d.me;
@@ -654,7 +659,12 @@ function applyServer(d,p,x){
     if(JSON.stringify(S.users)===x.usersSig){S.users=srvUsers;if(S.me){const m=S.users.find(u=>u.id===S.me.id);if(m)S.me=m}}
     S.sync.userSnap={};srvUsers.forEach(u=>{S.sync.userSnap[u.id]=JSON.stringify(u)});
     S.ccHistory=d.ccHistory||S.ccHistory;
-  }   /* sheet switched: keep this device's users, they are re-sent to the new Sheet */
+  }else{
+    /* sheet switched: keep this device's users (they are re-sent) AND take over the users already on the new Sheet */
+    srvUsers.forEach(u=>{if(!S.users.some(x=>x.id===u.id||x.username===u.username))S.users.push(u)});
+    S.sync.userSnap={};srvUsers.forEach(u=>{S.sync.userSnap[u.id]=JSON.stringify(u)});
+    if((d.ccHistory||[]).length)S.ccHistory=d.ccHistory;
+  }
 
   if(d.serverEmpty){
     if(S.cloud.migrated&&(S.master.length||S.lines.length)){wipeLocalTask();ensureTask();changed=true}
@@ -729,6 +739,10 @@ async function syncOnce(o){
     S.cloud.migrated=true;
     S.sync.fails=0;S.cloud.err="";S.cloud.lastPush=new Date().toISOString();S.cloud.lastPull=S.cloud.lastPush;
     snap();snapSync();cloudChip("Tracker synced","live");
+    if(verOld(S.cloud.serverVer)&&S.cloud.serverVer&&DEFAULT_CLOUD.url&&S.cloud.url!==DEFAULT_CLOUD.url){
+      S.cloud.url=DEFAULT_CLOUD.url;S.cloud.key=DEFAULT_CLOUD.key;S.cloud.defV=DEFAULT_CLOUD.v;S.cloud.serverVer="";snap();queuePush(300);
+      toast("Old script link replaced with the current one","good");
+    }
     if(d.stale&&p.lines.length)toast("A new audit task was started by another user — unsynced scans of the old task were dropped","err");
     if(changed&&!o.noRender)softRender();
     ok=true;
@@ -2240,6 +2254,7 @@ function vCloud(host){
   if(S.cloud.err) c.append(el("p",{class:"hint bad",text:"Last error: "+S.cloud.err}));
   host.append(c);
 
+  host.append(el("p",{class:"hint",style:"margin:0 0 10px",text:"Page build "+BUILD+" · script "+(S.cloud.serverVer?"v"+S.cloud.serverVer:"not contacted yet")+" · "+(String(S.cloud.url||"").replace(/^https:\/\/script\.google\.com\/macros\/s\//,"").slice(0,14)||"no URL")+"…"}));
   host.append(el("div",{class:"tiles"},
     tile("Link status",S.cloud.url?(S.cloud.err?"Error":(verOld(S.cloud.serverVer)&&S.cloud.serverVer?"Old script":"Linked")):"Not set",
       S.cloud.url?(S.cloud.sheetId?"Sheet …"+String(S.cloud.sheetId).slice(-8)+(S.cloud.serverVer?" · script v"+S.cloud.serverVer:""):"web app configured"):"paste the /exec URL",S.cloud.err||(verOld(S.cloud.serverVer)&&S.cloud.serverVer)?"r":S.cloud.url?"g":""),
