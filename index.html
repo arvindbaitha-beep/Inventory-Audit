@@ -328,6 +328,16 @@ input,select,textarea{background:#fff;border:1px solid #ccd9e6;border-radius:8px
 @media(max-width:920px){.top{padding:8px 10px;min-height:58px}.top .chip{display:none}.shell{display:block}aside{top:auto;bottom:0;width:auto;max-height:none;display:flex;gap:5px;overflow-x:auto;padding:7px 7px calc(7px + env(safe-area-inset-bottom,0px));background:#10243f;border-top:1px solid #294765;z-index:80}.nb{flex:0 0 auto;width:auto;padding:7px 10px;margin:0;font-size:11px}.nb .ic{width:20px;height:20px}.navgrp{display:none}main{padding:10px 9px 100px}.welcome{padding:14px;display:block}.welcome h1{font-size:23px}.welcome .welcome-badge{margin-top:10px;display:inline-block}.tiles{grid-template-columns:repeat(2,1fr);gap:7px}.tile{min-height:80px;padding:10px}.tile .v{font-size:23px}.dash-grid{grid-template-columns:1fr}.dash-wide{grid-column:span 1}.cat-row{grid-template-columns:90px 1fr 42px;gap:7px}.quick-grid{grid-template-columns:1fr 1fr}.scan-focus .scan-input{height:58px;font-size:20px}}
 @media(max-width:480px){.tiles{grid-template-columns:1fr 1fr}.quick-grid{grid-template-columns:1fr}.top .who span:not(.av){display:none}.logo b{font-size:17px}.logo:before{width:32px;height:32px;font-size:18px}.welcome h1{font-size:21px}}
 
+html,body{overscroll-behavior-y:none}
+.scroll,.scroll.cap{overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+body{touch-action:manipulation}
+.mdl{position:fixed;inset:0;background:rgba(10,20,30,.62);display:flex;align-items:center;justify-content:center;z-index:99999;padding:16px}
+.mdl .box{background:var(--paper,#fff);color:var(--ink,#111);max-width:430px;width:100%;border-radius:16px;padding:20px;box-shadow:0 24px 60px rgba(0,0,0,.45);border-top:6px solid #f59e0b}
+.mdl h3{margin:0 0 10px;font-size:20px}
+.mdl p{margin:6px 0;font-size:15px;line-height:1.4}
+.mdl .acts{display:grid;gap:10px;margin-top:16px}
+.mdl .acts button{min-height:54px;font-size:16px;font-weight:700}
+.kbbtn{font-weight:700}
 </style>
 </head>
 <body>
@@ -341,7 +351,10 @@ const APP="Stock Audit WMS", LS="wms.sc.v3", LS_OLD="wms.sc.v2";
 /* Paste your Apps Script /exec URL once here and every phone/PC opens already linked. */
 /* DEFAULT_CLOUD.v: change it whenever the URL below changes - every device then drops its old saved URL and uses this one. */
 const DEFAULT_CLOUD={url:"https://script.google.com/macros/s/AKfycbzSH2QcuS4pQ9Bc_BuWP9Mn8w1E6mbdguWO4vfLl7i-6UPDSsPJex_H59k-X6uSQhXX/exec",key:"ARVIND_WMS_2026",v:"2026-10-22-b"};
-const BUILD="2026-10-22-b";
+const BUILD="2026-10-23-a";
+/* one id per browser/device - a bin lock belongs to a USER on one DEVICE */
+const DEV=(()=>{try{let d=localStorage.getItem("wms.dev");if(!d){d="d"+Math.random().toString(36).slice(2,9)+Date.now().toString(36);localStorage.setItem("wms.dev",d)}return d}catch(e){return "d"+Math.random().toString(36).slice(2,9)}})();
+let KB=false;try{KB=localStorage.getItem("wms.kb")==="1"}catch(e){}
 const BRACKETS=[
   {k:"b60",label:"Above 60%",min:60,max:Infinity,cls:"ok",   note:"Fresh stock"},
   {k:"b40",label:"40% to 60%",min:40,max:60,     cls:"info", note:"Normal rotation"},
@@ -560,9 +573,10 @@ function pendingInfo(){
   const usersUp=S.users.filter(u=>S.sync.userSnap[u.id]!==JSON.stringify(u));
   const usersDel=Object.keys(S.sync.userSnap).filter(id=>!S.users.some(u=>u.id===id));
   const cfgPatch=(S.cfg.taskId&&settingsSig()!==S.sync.cfgSnap)?SETTING_KEYS.reduce((o,k)=>(o[k]=S.cfg[k],o),{}):null;
-  return{taskId:S.cfg.taskId||"",since:S.sync.rev,mver:S.sync.mver,lines,deletedIds:[...S.sync.deletedIds],doneOps,usersUp,usersDel,cfgPatch};
+  return{taskId:S.cfg.taskId||"",since:S.sync.rev,mver:S.sync.mver,uid:curUid(),dev:DEV,lines,deletedIds:[...S.sync.deletedIds],doneOps,usersUp,usersDel,cfgPatch};
 }
-const emptyPending=()=>({taskId:S.cfg.taskId||"",since:S.sync.rev,mver:S.sync.mver,lines:[],deletedIds:[],doneOps:{},usersUp:[],usersDel:[],cfgPatch:null});
+const curUid=()=>S.me?S.me.id:(S.lastUid||"");
+const emptyPending=()=>({taskId:S.cfg.taskId||"",since:S.sync.rev,mver:S.sync.mver,uid:curUid(),dev:DEV,lines:[],deletedIds:[],doneOps:{},usersUp:[],usersDel:[],cfgPatch:null});
 const hasPending=p=>!!(p.lines.length||p.deletedIds.length||Object.keys(p.doneOps).length||p.usersUp.length||p.usersDel.length||p.cfgPatch);
 const pendingCount=()=>{const p=pendingInfo();return p.lines.length+p.deletedIds.length+Object.keys(p.doneOps).length+p.usersUp.length+p.usersDel.length+(p.cfgPatch?1:0)};
 
@@ -610,8 +624,8 @@ async function cloudPing(){
   S.cloud.err="";return j;
 }
 /* master rows travel as [shelf,sku,desc,category,qty,uom] - about 3x smaller than objects */
-const packMaster=rows=>rows.map(r=>[r.shelf,r.sku,r.desc||"",r.category||"",r.qty,r.uom||""]);
-const unpackMaster=a=>({shelf:a[0],sku:a[1],desc:a[2],category:a[3],qty:a[4],uom:a[5]});
+const packMaster=rows=>rows.map(r=>[r.shelf,r.sku,r.desc||"",r.category||"",r.qty,r.uom||"",r.seller||""]);
+const unpackMaster=a=>({shelf:a[0],sku:a[1],desc:a[2],category:a[3],qty:a[4],uom:a[5],seller:a[6]||""});
 async function fetchMaster(expectMver){
   const out=[];let off=0,total=1,mver=expectMver||"";
   while(off<total){
@@ -633,7 +647,7 @@ function wipeLocalTask(){
   BIG.m=BIG.l=true;
 }
 /* Merge the server's answer into local state. Returns true when something visible changed. */
-const WMS_NEEDS_SERVER="4.0";
+const WMS_NEEDS_SERVER="5.0";
 const verOld=v=>String(v||"0").localeCompare(WMS_NEEDS_SERVER,undefined,{numeric:true})<0;
 function applyServer(d,p,x){
   /* identity of the Google Sheet behind the web app */
@@ -650,7 +664,15 @@ function applyServer(d,p,x){
   }
   if(d.ver)S.cloud.serverVer=d.ver;
   if(d.same){S.sync.rev=d.rev;return false}
-  let changed=false;
+  let changed=false,forceFull=false;
+  const rejSet=new Set(((d.rejected||{}).lines||[]).map(String));
+  if(d.rejected){
+    const rj=d.rejected;
+    if(rejSet.size){S.lines=S.lines.filter(l=>!rejSet.has(String(l.id)));rejSet.forEach(id=>S.sync.dirtyIds.delete(id));BIG.l=true;changed=true;
+      toast(rejSet.size+" scan(s) were NOT saved because this bin is locked by another user / device. Open the bin again and rescan.","err")}
+    if(rj.dels&&rj.dels.length){forceFull=true;changed=true;toast("Delete refused: the bin is locked by another user.","err")}
+    if(rj.ops&&rj.ops.length){changed=true;toast("Server refused the bin action for "+rj.ops.join(", ")+" (lock / permission).","err")}
+  }
   const sig0=JSON.stringify([S.shelfDone,S.cfg.shelfLocks,S.cfg.taskStatus,S.users.length,S.cfg.taskId]);
 
   /* users — always, even before any task exists, so a new device can sign in */
@@ -679,7 +701,7 @@ function applyServer(d,p,x){
       S.sync.cfgSnap="";
     }else if(d.reset){
       if(!S.cloud.migrated)S.lines.forEach(l=>S.sync.dirtyIds.add(String(l.id)));   // first link: never lose local scans
-      const sent=new Set((p.lines||[]).map(l=>String(l.id)));
+      const sent=new Set((p.lines||[]).map(l=>String(l.id)).filter(id=>!rejSet.has(id)));
       const srvIds=new Set((d.lines||[]).map(l=>String(l.id)));
       const keep=S.lines.filter(l=>{const id=String(l.id);return !srvIds.has(id)&&(S.sync.dirtyIds.has(id)||sent.has(id))});
       S.lines=(d.lines||[]).concat(keep);changed=true;BIG.l=true;
@@ -692,7 +714,9 @@ function applyServer(d,p,x){
     /* settings + task state */
     const mine={};SETTING_KEYS.forEach(k=>{mine[k]=S.cfg[k]});
     const keepMine=!taskChanged&&settingsSig()!==x.cfgSigSent;
+    const keepLocks=(!taskChanged&&d.rev<(S.claimRev||0))?S.cfg.shelfLocks:null;   // answer is older than my own claim
     if(!taskChanged)S.cfg=Object.assign({},S.cfg,d.cfg||{});
+    if(keepLocks)S.cfg.shelfLocks=keepLocks;
     if(keepMine)Object.assign(S.cfg,mine);
     S.cfg.taskId=d.taskId;
     S.sync.cfgSnap=keepMine?x.cfgSigSent:settingsSig();
@@ -703,9 +727,12 @@ function applyServer(d,p,x){
     S.sync.rev=d.rev;S.sync.mver=d.mver||"";
     rebuildIndexes();
     if(S.activeShelf&&!S.idx.masterShelf.has(S.activeShelf)){S.activeShelf=null;S.editId=null;changed=true}
+    if(S.activeShelf&&S.me&&cloudReady()&&!S.shelfDone[S.activeShelf]&&!shelfMine(shelfLock(S.activeShelf))&&!taskChanged){
+      toast("Bin "+S.activeShelf+" is no longer locked to you on this device — open it again.","err");S.activeShelf=null;S.editId=null;changed=true}
     if(taskChanged&&!p.lines.length)toast("New audit task received from Google Tracker","good");
   }
   VER++;
+  if(forceFull)S.sync.rev=0;
   if(JSON.stringify([S.shelfDone,S.cfg.shelfLocks,S.cfg.taskStatus,S.users.length,S.cfg.taskId])!==sig0)changed=true;
   return changed;
 }
@@ -721,7 +748,7 @@ async function syncOnce(o){
   o=o||{};
   if(!cloudReady())return{ok:false,error:"Sheet not linked"};
   if(syncing){syncAgain=true;return{ok:true,queued:true}}
-  syncing=true;syncAgain=false;
+  syncing=true;syncAgain=false;if(S.me)S.lastUid=S.me.id;
   const p=(o.pullOnly||(!S.cloud.auto&&!o.manual))?emptyPending():pendingInfo();
   const inflight=p.lines.map(l=>String(l.id)),inflightDel=p.deletedIds.slice();
   if(hasPending(p)){S.sync.dirtyIds.clear();S.sync.deletedIds.clear();cloudChip("Syncing…")}
@@ -796,6 +823,7 @@ function chip(m){const c=$("#chip");if(!c)return;
 
 async function boot(){
   const meId=await loadLocal();
+  S.lastUid=meId||"";
   const linkedNow=!SANDBOX&&applyTeamLink();
   try{DB=window.claude&&claude.use?await claude.use("db"):null}catch(e){DB=null}
   try{DL=window.claude&&claude.use?await claude.use("downloads"):null}catch(e){DL=null}
@@ -874,18 +902,28 @@ const NAV=[
   {v:"users",t:"User Management",i:"♙",c:"c8"}
 ];
 const VIEWC={dash:"c1",setup:"c2",scan:"c3",search:"c4",life:"c5",summary:"c6",export:"c7",cloud:"c9",users:"c8"};
-let renderHard=false;
-function renderBlocked(){
+let renderHard=false,lastTouch=0;
+["touchstart","touchmove","wheel","scroll"].forEach(ev=>window.addEventListener(ev,()=>{lastTouch=Date.now()},{passive:true,capture:true}));
+const renderNever=()=>!S.me||S.view==="setup"||S.view==="users"||S.view==="cloud";
+function renderDefer(){
   const a=document.activeElement;
   const typing=a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&String(a.value||"").length>0&&a.type!=="checkbox";
-  return !S.me||typing||S.view==="setup"||S.view==="users"||S.view==="cloud";
+  return typing||(Date.now()-lastTouch<1800)||!!document.querySelector(".mdl");
 }
-/* hard render (own scan) always runs; soft render (data from other users) is skipped while someone is typing / on a form page */
+/* own actions render at once; data that arrives from other users waits until the user stops scrolling / typing */
 function scheduleRender(soft){if(!soft)renderHard=true;clearTimeout(renderT);
-  renderT=setTimeout(()=>{const h=renderHard;renderHard=false;if(!h&&renderBlocked())return;render()},60)}
+  const run=()=>{const h=renderHard;if(!h){if(renderNever()){return}if(renderDefer()){renderT=setTimeout(run,900);return}}renderHard=false;render()};
+  renderT=setTimeout(run,60)}
 function softRender(){scheduleRender(true)}
 
 function render(){
+  const keep=S._lv===S.view&&S._ls===S.activeShelf&&!!document.querySelector("main");
+  const sy=keep?window.scrollY:0,sc=keep?[...document.querySelectorAll(".scroll")].map(e=>e.scrollTop):[];
+  _render();
+  S._lv=S.view;S._ls=S.activeShelf;
+  if(keep){try{window.scrollTo(0,sy)}catch(e){}document.querySelectorAll(".scroll").forEach((e,i)=>{if(sc[i])e.scrollTop=sc[i]})}
+}
+function _render(){
   const root=$("#root");
   if(!S.booted){root.replaceChildren(el("div",{class:"gate"},el("p",{class:"muted",text:"Loading…"})));return}
   if(!S.me){root.replaceChildren(gate());return}
@@ -905,7 +943,8 @@ function render(){
     el("div",{class:"who"},el("span",{class:"av",text:initials(S.me.name)}),
       el("span",{},S.me.name," ",el("span",{class:"tag "+(isAdmin()?"info":"idle"),text:isAdmin()?"Admin":"Operator"}))),
     el("button",{class:"ib",onclick:themeToggle,title:"Light / dark"},"◐"),
-    el("button",{class:"ib",onclick(){S.me=null;snap();render()}},"Sign out"));
+    el("button",{class:"ib kbbtn",id:"kbBtn",title:"On-screen keyboard for the scan boxes (OFF = scanner only)",onclick:kbToggle},"⌨ "+(KB?"ON":"OFF")),
+    el("button",{class:"ib",onclick(){if(S.me)S.lastUid=S.me.id;const pend=cloudReady();S.me=null;snap();render();if(pend)syncOnce({silent:true,noRender:true}).catch(()=>{})}},"Sign out"));
 
   const aside=el("aside",{});
   NAV.forEach(n=>{
@@ -1164,10 +1203,10 @@ async function downloadCategoryTemplate(){
   // optional Downloads helper, which may not be available in every deployment.
   S.cfg.templateDownloaded=true;
   save("state");
-  const rows=[["Category","Shelf","SKU","Qty"],
-    ["Apparel","A-01-01","SKU-1001",10],
-    ["Cosmetics","A-01-02","SKU-2001",5],
-    ["Electronics","A-01-03","SKU-3001",8]];
+  const rows=[["Category","Shelf","SKU","Qty","Seller","Description"],
+    ["Apparel","A-01-01","SKU-1001",10,"Seller A","Cotton T-shirt"],
+    ["Cosmetics","A-01-02","SKU-2001",5,"Seller B","Face wash 100ml"],
+    ["Electronics","A-01-03","SKU-3001",8,"Seller C","USB cable"]];
   const csv="\uFEFF"+toCsv(rows);
   try{
     const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
@@ -1212,9 +1251,9 @@ function vSetup(host,t){
       +(p.skipped?" · "+p.skipped+" rows skipped (missing shelf/SKU or unknown category)":"")+(p.dups?" · "+p.dups+" duplicate shelf+SKU rows merged":"")}));
     const tb=el("tbody");p.rows.slice(0,5).forEach(r=>tb.append(el("tr",{},
       el("td",{},el("span",{class:"category-badge",text:categoryLabel(r.category)})),el("td",{class:"code",text:r.shelf}),el("td",{class:"code",text:r.sku}),
-      el("td",{text:r.desc||"—"}),el("td",{class:"n",text:fmt(r.qty)}))));
+      el("td",{text:r.desc||"—"}),el("td",{text:r.seller||"—"}),el("td",{class:"n",text:fmt(r.qty)}))));
     out.append(el("div",{class:"scroll"},el("table",{},el("thead",{},el("tr",{},
-      el("th",{text:"Category"}),el("th",{text:"Shelf"}),el("th",{text:"SKU"}),el("th",{text:"Description"}),
+      el("th",{text:"Category"}),el("th",{text:"Shelf"}),el("th",{text:"SKU"}),el("th",{text:"Description"}),el("th",{text:"Seller"}),
       el("th",{class:"n",text:"System qty"}))),tb)));}
   ta.addEventListener("input",pv);
 
@@ -1286,7 +1325,7 @@ function vSetup(host,t){
     host.append(c3);
   }
   host.append(el("details",{class:"help"},el("summary",{text:"Which column names are understood"}),
-    el("p",{html:"Matched automatically, any order: <code>Shelf</code> / Location / Bin / Rack, <code>SKU</code> / Item / Material / Barcode, <code>Qty</code> / Quantity / On hand / System Qty, plus optional <code>Description</code> and <code>UOM</code>. Comma or tab separated."}),
+    el("p",{html:"Matched automatically, any order: <code>Shelf</code> / Location / Bin / Rack, <code>SKU</code> / Item / Material / Barcode, <code>Qty</code> / Quantity / On hand / System Qty, plus optional <code>Seller</code> (Vendor / Supplier), <code>Description</code> and <code>UOM</code>. Comma or tab separated."}),
     el("p",{text:"Repeat the shelf on every SKU row. Duplicate shelf+SKU rows are added together."})));
 }
 function splitRows(text){const rows=[];let f="",row=[],q=false;
@@ -1304,7 +1343,8 @@ const HEAD={category:["category","cat","type","productcategory"],
   sku:["sku","skucode","item","itemcode","material","materialcode","product","productcode","article","partno","code","barcode","ean"],
   qty:["qty","quantity","systemqty","stock","stockqty","bookqty","onhand","soh","systemquantity","qtyonhand"],
   desc:["desc","description","itemname","productname","name","itemdescription","materialdescription"],
-  uom:["uom","unit","units","measure","baseuom"]};
+  uom:["uom","unit","units","measure","baseuom"],
+  seller:["seller","sellar","sellername","sellerid","sellercode","vendor","vendorname","supplier","suppliername"]};
 function parseImport(text){
   const rows=splitRows(text); if(!rows.length)return{error:"Nothing to read."};
   const key=c=>String(c).toLowerCase().replace(/[^a-z0-9]/g,"");
@@ -1325,11 +1365,12 @@ function parseImport(text){
     if(!["APPAREL","COSMETICS","ELECTRONICS"].includes(norm(category))){bad++;return}
     out.push({category:category.replace(/^./,x=>x.toUpperCase()),shelf:shelf,sku:sku,qty:num(r[idx.qty]),
       desc:idx.desc!==undefined?String(r[idx.desc]||"").trim():"",
-      uom:idx.uom!==undefined?String(r[idx.uom]||"").trim():""})});
+      uom:idx.uom!==undefined?String(r[idx.uom]||"").trim():"",
+      seller:idx.seller!==undefined?String(r[idx.seller]||"").trim():""})});
   if(!out.length)return{error:"No usable rows — Category, Shelf, SKU and Qty are required."};
   const cats=new Map();out.forEach(r=>{const c=cats.get(r.shelf)||new Set();c.add(norm(r.category));cats.set(r.shelf,c)});
   const agg=new Map();
-  for(const r of out){const k=r.shelf+"\u0000"+r.sku,e=agg.get(k);if(e){e.qty+=r.qty;if(!e.desc)e.desc=r.desc}else agg.set(k,Object.assign({},r))}
+  for(const r of out){const k=r.shelf+"\u0000"+r.sku,e=agg.get(k);if(e){e.qty+=r.qty;if(!e.desc)e.desc=r.desc;if(!e.seller)e.seller=r.seller}else agg.set(k,Object.assign({},r))}
   const merged=[...agg.values()];
   return{rows:merged,skipped:bad,headed:headed,dups:out.length-merged.length};
 }
@@ -1346,7 +1387,19 @@ function skuCategory(shelf,sku){
 function categoryLabel(c){const x=norm(c);return x?x.charAt(0)+x.slice(1).toLowerCase():"Apparel"}
 function isCosmetics(c){return norm(c)==="COSMETICS"}
 function shelfLock(shelf){return (S.cfg.shelfLocks||{})[shelf]||null}
-function myShelfLock(shelf){const x=shelfLock(shelf);return x&&x.by===S.me.id}
+function kbToggle(){
+  KB=!KB;try{localStorage.setItem("wms.kb",KB?"1":"0")}catch(e){}
+  document.querySelectorAll("input[data-kb]").forEach(i=>i.setAttribute("inputmode",KB?(i.dataset.kb==="num"?"numeric":"text"):"none"));
+  const b=document.getElementById("kbBtn");if(b)b.textContent="⌨ "+(KB?"ON":"OFF");
+  const t=document.querySelector("input.scan-input")||document.querySelector("input[data-kb]");
+  const a=document.activeElement;
+  if(a&&a.blur)a.blur();
+  if(t)setTimeout(()=>t.focus(),60);          // ON: keyboard opens;  OFF: stays closed (inputmode=none)
+  toast(KB?"Keyboard ON — tap a box to type":"Keyboard OFF — scanner only");
+}
+function shelfMine(lk){return !!lk&&!!S.me&&lk.by===S.me.id&&(!lk.dev||lk.dev===DEV)}
+function myShelfLock(shelf){return shelfMine(shelfLock(shelf))}
+function canScan(shelf){return !cloudReady()||shelfMine(shelfLock(shelf))}
 /* Team link = this page + the Web-app URL and secret in the #hash. Opening it links that device automatically. */
 async function shareTeamLink(){
   const l=teamLink();
@@ -1367,41 +1420,60 @@ function applyTeamLink(){
   }catch(e){return false}
 }
 const lockStale=l=>{const t=Date.parse(l&&l.at);return isFinite(t)&&Date.now()-t>12*3600*1000};
-async function claimShelf(shelf){
+let claiming=false;
+/* A bin is opened only after the Google Sheet confirms the lock - two users can never share a bin. */
+async function claimShelf(shelf,takeover){
   if(S.cfg.taskStatus==="COMPLETE"){toast("Audit task is completed. Upload new bins for the next task.","err");return false}
   const lock=shelfLock(shelf);
-  if(lock&&lock.by!==S.me.id&&!lockStale(lock)){toast("This shelf is locked by "+(lock.byName||"another user"),"err");return false}
-  if(lock&&lock.by===S.me.id)return true;
-  /* optimistic: open at once, confirm with the Sheet in the background */
-  const mine={by:S.me.id,byName:S.me.name,at:new Date().toISOString()};
-  S.cfg.shelfLocks=S.cfg.shelfLocks||{};S.cfg.shelfLocks[shelf]=mine;save("state");
-  if(cloudReady()){
-    cloudCall({key:S.cloud.key,action:"claim",taskId:S.cfg.taskId,shelf:shelf,user:{id:S.me.id,name:S.me.name}}).then(j=>{
-      if(j.data&&j.data.lock){S.cfg.shelfLocks=S.cfg.shelfLocks||{};S.cfg.shelfLocks[shelf]=j.data.lock;snap()}
-    }).catch(e=>{
-      if(e&&e.network){toast("Offline — shelf lock will be confirmed when internet returns","err");return}
-      const cur=(S.cfg.shelfLocks||{})[shelf];if(cur&&cur.by===S.me.id)delete S.cfg.shelfLocks[shelf];
-      if(S.activeShelf===shelf){S.activeShelf=null;S.editId=null}
-      toast(e.message,"err");render();
-    });
-  }
-  return true;
+  if(!cloudReady()&&lock&&lock.by!==S.me.id&&!lockStale(lock)){toast("This bin is locked by "+(lock.byName||"another user"),"err");return false}
+  if(!cloudReady()){S.cfg.shelfLocks=S.cfg.shelfLocks||{};S.cfg.shelfLocks[shelf]={by:S.me.id,byName:S.me.name,at:new Date().toISOString(),dev:DEV};save("state");return true}
+  if(shelfMine(lock))return true;                      // resume my own bin (works offline)
+  if(claiming)return false;
+  claiming=true;
+  try{
+    toast("Opening bin "+shelf+"…");
+    const j=await cloudCall({key:S.cloud.key,action:"claim",taskId:S.cfg.taskId,shelf:shelf,dev:DEV,takeover:!!takeover,user:{id:S.me.id,name:S.me.name}},null,25000);
+    S.cfg.shelfLocks=S.cfg.shelfLocks||{};S.cfg.shelfLocks[shelf]=j.data.lock;S.claimRev=j.data.rev||0;snap();
+    await syncOnce({silent:true,noRender:true});        // latest scans of this bin before the first scan
+    return shelfMine(shelfLock(shelf));
+  }catch(e){
+    const m=String(e&&e.message||"");
+    if(/^OTHER_DEVICE/.test(m)){
+      claiming=false;
+      if(confirm("This bin is open on your OTHER device.\n\nOK = move it to this device (the other device will stop scanning).\nCancel = leave it there."))return await claimShelf(shelf,true);
+      return false}
+    if(/^ONE_BIN:/.test(m)){toast(m.replace(/^ONE_BIN:[^:]*:\s*/,""),"err");return false}
+    if(e&&e.network)toast("Internet is needed to open a bin (so two users never share one). Bins you already opened keep working offline.","err");
+    else toast(m||"Could not open the bin","err");
+    return false;
+  }finally{claiming=false}
 }
-function releaseShelfLock(shelf){
+async function releaseShelfLock(shelf){
   if(!S.cfg.shelfLocks||!S.cfg.shelfLocks[shelf])return;
   if(!(isAdmin()||myShelfLock(shelf)))return;
+  if(cloudReady()&&myShelfLock(shelf))await syncOnce({manual:true,noRender:true});     // send my scans while I still hold the lock
   delete S.cfg.shelfLocks[shelf];save("state");
-  if(cloudReady())cloudCall({key:S.cloud.key,action:"release",taskId:S.cfg.taskId,shelf:shelf,user:{id:S.me.id,name:S.me.name},admin:isAdmin()}).catch(()=>{});
+  if(cloudReady()){
+    try{const j=await cloudCall({key:S.cloud.key,action:"release",taskId:S.cfg.taskId,shelf:shelf,user:{id:S.me.id,name:S.me.name}});S.claimRev=(j.data||{}).rev||S.claimRev}
+    catch(e){toast(e.message,"err")}
+  }
 }
 function leaveShelf(shelf){
   const st=shelfStat(shelf);
-  if(!st.lines&&!st.done)releaseShelfLock(shelf);      // nothing scanned: free the shelf for others
+  const mineScans=S.lines.some(l=>l.shelf===shelf&&l.by===S.me.id);
+  if(!mineScans&&!st.done)releaseShelfLock(shelf);      // nothing scanned by me: free the bin for others
   S.activeShelf=null;S.editId=null;render();
 }
+let _selV=-1,_selM=null;
+function sellerOf(sku){if(_selV!==VER){_selM=new Map();for(const r of S.master)if(r.seller&&!_selM.has(r.sku))_selM.set(r.sku,r.seller);_selV=VER}return _selM.get(sku)||""}
+let _skShV=-1,_skSh=null;
+function skuShelves(sku){if(_skShV!==VER){_skSh=new Map();for(const r of S.master){let a=_skSh.get(r.sku);if(!a){a=new Set();_skSh.set(r.sku,a)}a.add(r.shelf)}_skShV=VER}return [..._skSh.get(sku)||[]]}
 function categoryScanCount(shelf,sku){let n=0;for(const l of lineRows(shelf))if(l.sku===sku)n+=num(l.qty);return n}
 function systemSkuQty(shelf,sku){let n=0;for(const r of masterRows(shelf))if(r.sku===sku)n+=num(r.qty);return n}
 function appendScan(shelf,sku,extra){
-  const category=extra.category||skuCategory(shelf,sku), key=(l)=>l.shelf===shelf&&l.sku===sku&&norm(l.category||category)===norm(category)&&String(l.batch||"")===String(extra.batch||"")&&String(l.mfg||"")===String(extra.mfg||"")&&String(l.exp||"")===String(extra.exp||"");
+  if(!canScan(shelf)){toast("Scan NOT saved: bin "+shelf+" is not locked to you on this device. Open the bin again.","err");S.activeShelf=null;scheduleRender();return false}
+  S.lastUid=S.me.id;
+  const category=extra.category||skuCategory(shelf,sku), key=(l)=>l.shelf===shelf&&l.sku===sku&&norm(l.category||category)===norm(category)&&String(l.batch||"")===String(extra.batch||"")&&String(l.mfg||"")===String(extra.mfg||"")&&String(l.exp||"")===String(extra.exp||"")&&String(l.by||"")===String(S.me.id);
   const inc=Math.max(1,Math.floor(num(extra.qty))||1);
   let row=null; for(const l of lineRows(shelf)){if(key(l)){row=l;break}}
   if(row){row.qty=num(row.qty)+inc;row.ts=new Date().toISOString();row.lastBy=S.me.id;row.lastByName=S.me.name;row.byNames=Array.from(new Set([...(row.byNames||[]),S.me.name]));
@@ -1412,6 +1484,7 @@ function appendScan(shelf,sku,extra){
   }
   if(S.sync)S.sync.dirtyIds.add(String(row.id));
   save("lines");
+  return true;
 }
 function userVisibleLines(){
   if(isAdmin())return S.lines;
@@ -1437,7 +1510,7 @@ function vScan(host,t){
     tile("Completed",fmt(t.done),"submitted","g"),
     tile("Scan entries",fmt(t.lines),"across all shelves","b")));
 
-  const jump=el("input",{class:"big",type:"search",placeholder:"Scan shelf barcode…",autocomplete:"off",
+  const jump=el("input",{class:"big",type:"search",placeholder:"Scan shelf barcode…",autocomplete:"off",inputmode:KB?"text":"none","data-kb":"text",
     onkeydown(e){if(e.key!=="Enter")return;e.preventDefault();
       const v=norm(jump.value);if(!v)return;
       const flat=x=>x.replace(/[^A-Z0-9]/g,"");
@@ -1452,7 +1525,7 @@ function vScan(host,t){
   const seg=el("div",{class:"seg"});
   [["all","All"],["pending","Pending"],["part","In progress"],["done","Completed"]].forEach(function(p){
     seg.append(el("button",{"aria-pressed":String(S.filter===p[0]),onclick(){S.filter=p[0];paint()}},p[1]))});
-  const q=el("input",{type:"search",placeholder:"Filter shelves…",value:S.q,style:"max-width:210px",
+  const q=el("input",{type:"search",placeholder:"Filter shelves…",value:S.q,style:"max-width:210px",inputmode:KB?"text":"none","data-kb":"text",
     oninput(e){S.q=e.target.value;paint()}});
   host.append(el("div",{class:"filters"},seg,q));
   const grid=el("div",{class:"shelves"});host.append(grid);
@@ -1488,8 +1561,15 @@ function vScan(host,t){
 function scanShelf(host){
   const shelf=S.activeShelf, st=shelfStat(shelf);
   const category=shelfCategory(shelf), lock=shelfLock(shelf);
-  if(lock&&lock.by!==S.me.id){
-    host.append(el("div",{class:"mode-banner"},el("div",{},el("strong",{text:"Shelf locked"}),el("div",{class:"hint",text:isAdmin()?"Locked by "+(lock.byName||"another user"):"This shelf is already assigned to another user."})),el("span",{class:"category-badge",text:categoryLabel(category)})));return;
+  if(cloudReady()&&!st.done&&!shelfMine(lock)){
+    const other=lock&&lock.by!==S.me.id;
+    host.append(el("div",{class:"mode-banner"},el("div",{},el("strong",{text:other?"Bin locked":"Bin not locked to you"}),
+      el("div",{class:"hint",text:other?"This bin is being scanned by "+(lock.byName||"another user")+". Only that user can scan it.":"Open the bin again to lock it to you on this device."})),
+      el("span",{class:"category-badge",text:categoryLabel(category)})));
+    host.append(el("div",{class:"row",style:"margin:10px 0"},
+      other?null:el("button",{class:"btn hv",onclick(){(async()=>{if(await claimShelf(shelf))render()})()}},"Open this bin"),
+      el("button",{class:"btn ghost",onclick(){S.activeShelf=null;render()}},"← All bins")));
+    return;
   }
   const mRows=masterRows(shelf);
   const skuIdx=new Map(mRows.map(r=>[r.sku,r]));
@@ -1498,6 +1578,9 @@ function scanShelf(host){
 
   host.append(el("div",{class:"row",style:"margin-bottom:10px"},
     el("button",{class:"btn ghost sm",onclick(){leaveShelf(shelf)}},"← All shelves"),
+    (!locked&&cloudReady()&&shelfMine(lock))?el("button",{class:"btn ghost sm",onclick(){
+      if(!confirm("Release bin "+shelf+"?\n\nYour scans stay saved. Another user (or you) can open and continue this bin."))return;
+      (async()=>{await releaseShelfLock(shelf);S.activeShelf=null;S.editId=null;render()})()}},"Release bin"):null,
     el("h2",{style:"margin:0",text:shelf}),el("span",{class:"category-badge",text:categoryLabel(category)}),
     el("span",{class:"tag "+(locked?"ok":st.lines?"warn":"idle"),
       text:locked?"Completed":st.lines?"In progress":"Pending"}),
@@ -1517,7 +1600,12 @@ function scanShelf(host){
       el("button",{class:"btn ghost",onclick(){
         if(!isAdmin()&&st.sub.by!==S.me.id){toast("Only the submitting user or an admin can reopen","err");return}
         if(!confirm("Reopen "+shelf+" for editing?"))return;
-        delete S.shelfDone[shelf];save("state");claimShelf(shelf);toast("Reopened");render()}},"Reopen shelf")));
+        const prevDone=S.shelfDone[shelf];delete S.shelfDone[shelf];save("state");
+        (async()=>{
+          if(cloudReady()){const r=await syncOnce({manual:true,noRender:true});if(!r.ok)S.shelfDone[shelf]=prevDone}
+          if(S.shelfDone[shelf]){toast("Reopen was refused or failed","err");render();return}
+          if(!(await claimShelf(shelf))){toast("Bin reopened but could not be locked to you — open it again","err");render();return}
+          toast("Reopened");render()})()}},"Reopen shelf")));
   }else{
     host.append(entryRow(shelf,skuIdx));
   }
@@ -1607,6 +1695,7 @@ function shelfLineTable(shelf,locked){
     tb.append(el("tr",{},
       el("td",{class:"code",text:l.sku}),
       el("td",{text:desc||"—"}),
+      el("td",{text:sellerOf(l.sku)||"—"}),
       el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
       el("td",{class:"code",text:l.batch||"—"}),
       el("td",{class:"code",text:l.mfg||"—"}),
@@ -1623,7 +1712,7 @@ function shelfLineTable(shelf,locked){
       ] : null)));
   });
   card.append(el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},
-    el("th",{text:"SKU"}),el("th",{text:"Description"}),el("th",{text:"Category"}),
+    el("th",{text:"SKU"}),el("th",{text:"Description"}),el("th",{text:"Seller"}),el("th",{text:"Category"}),
     el("th",{text:"Batch"}),el("th",{text:"MFG"}),el("th",{text:"Expiry"}),
     el("th",{class:"n",text:"Shelf life (mth)"}),el("th",{class:"n",text:"Current life %"}),
     el("th",{class:"n",text:"Current life (days)"}),el("th",{class:"n",text:"Qty"}),
@@ -1633,6 +1722,28 @@ function shelfLineTable(shelf,locked){
   return card;
 }
 
+function askModal(o){return new Promise(res=>{
+  const prev=document.activeElement;if(prev&&prev.blur)prev.blur();
+  const esc=e=>{if(e.key==="Escape")done(false)};
+  const done=v=>{document.removeEventListener("keydown",esc,true);ov.remove();res(v)};
+  const yes=el("button",{class:"btn hv",onclick(){done(true)}},o.yes||"Yes");
+  const no=el("button",{class:"btn ghost",onclick(){done(false)}},o.no||"Cancel");
+  const ov=el("div",{class:"mdl"},el("div",{class:"box"},el("h3",{text:o.title}),...(o.body||[]).map(t=>el("p",{text:t})),el("div",{class:"acts"},yes,no)));
+  document.addEventListener("keydown",esc,true);
+  document.body.append(ov);
+})}
+S.excessOk=S.excessOk||new Set();
+/* SKU that is not in this bin's uploaded list needs an explicit OK before it is counted as excess */
+async function checkExcess(shelf,v,target){
+  if(target.has(v)||S.excessOk.has(shelf+"\u0000"+v)||lineRows(shelf).some(l=>l.sku===v))return true;
+  const other=skuShelves(v).filter(x=>x!==shelf);
+  const body=["SKU "+v+" is NOT in the uploaded list of bin "+shelf+"."];
+  body.push(other.length?"This SKU is uploaded for bin: "+other.slice(0,6).join(", ")+(other.length>6?" +"+(other.length-6)+" more":"")+".":"This SKU is not uploaded in any bin.");
+  body.push("Do you want to scan it as EXCESS in this bin?");
+  const ok=await askModal({title:"Excess scan?",body,yes:"Yes, scan as excess",no:"No, cancel"});
+  if(ok)S.excessOk.add(shelf+"\u0000"+v);
+  return ok;
+}
 function entryRow(shelf,skuIdx){
   const card=el("div",{class:"scan-focus"});
   const targetRows=masterRows(shelf), target=new Map();
@@ -1649,14 +1760,14 @@ function entryRow(shelf,skuIdx){
     tile("SKU lines",fmt(new Set(targetRows.map(r=>r.sku)).size),"master SKUs","y"));
   card.append(progress);
 
-  const sku=el("input",{class:"big scan-input",placeholder:"Scan SKU / EAN…",autocomplete:"off"});
+  const sku=el("input",{class:"big scan-input",placeholder:"Scan SKU / EAN…",autocomplete:"off",inputmode:KB?"text":"none","data-kb":"text"});
   const extraWrap=el("div",{class:"scan-extra",style:"display:none"});
-  const batch=el("input",{placeholder:"Batch",autocomplete:"off"});
+  const batch=el("input",{placeholder:"Batch",autocomplete:"off",inputmode:KB?"text":"none","data-kb":"text"});
   const mfg=el("input",{type:"date"}),exp=el("input",{type:"date"});
-  const qty=el("input",{type:"number",min:"1",step:"1",value:"1",inputmode:"numeric"});
+  const qty=el("input",{type:"number",min:"1",step:"1",value:"1",inputmode:KB?"numeric":"none","data-kb":"num"});
   const mode=el("div",{class:"hint",style:"min-height:22px"});
   const add=el("button",{class:"btn hv",style:"display:none",onclick:commit},"Confirm 1 PC");
-  const clear=el("button",{class:"btn ghost",onclick(){sku.value="";batch.value="";mfg.value="";exp.value="";qty.value="1";extraWrap.style.display="none";add.style.display="none";mode.className="hint";mode.textContent="Ready for next SKU scan.";clearTimeout(autoTimer);sku.focus()}},"Clear");
+  const clear=el("button",{class:"btn ghost",onclick(){sku._ok="";sku.value="";batch.value="";mfg.value="";exp.value="";qty.value="1";extraWrap.style.display="none";add.style.display="none";mode.className="hint";mode.textContent="Ready for next SKU scan.";clearTimeout(autoTimer);sku.focus()}},"Clear");
   extraWrap.append(
     el("label",{class:"f"},el("span",{text:"Batch *"}),batch),
     el("label",{class:"f"},el("span",{text:"MFG *"}),mfg),
@@ -1670,15 +1781,15 @@ function entryRow(shelf,skuIdx){
   targetList.append(el("h3",{text:"SKU scan progress"}));
   const tb=el("tbody");
   target.forEach((q,skuCode)=>{const got=counted(skuCode), diff=got-num(q), cat=skuCategory(shelf,skuCode);tb.append(el("tr",{},
-    el("td",{class:"code",text:skuCode}),el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
+    el("td",{class:"code",text:skuCode}),el("td",{text:(skuIdx.get(skuCode)||{}).seller||"—"}),el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
     el("td",{class:"n",text:fmt(q)}),el("td",{class:"n",text:fmt(got)}),
     el("td",{},el("span",{class:"tag "+(diff===0?"ok":diff>0?"warn":"idle"),text:diff===0?"Match":diff>0?"Extra "+fmt(diff):fmt(-diff)+" pending"}))));});
   const extraSkus=[...new Set(S.lines.filter(l=>l.shelf===shelf&&!target.has(l.sku)).map(l=>l.sku))];
   extraSkus.forEach(skuCode=>{const got=counted(skuCode), cat=skuCategory(shelf,skuCode);tb.append(el("tr",{},
-    el("td",{class:"code",text:skuCode}),el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
+    el("td",{class:"code",text:skuCode}),el("td",{text:sellerOf(skuCode)||"—"}),el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
     el("td",{class:"n",text:"—"}),el("td",{class:"n",text:fmt(got)}),
     el("td",{},el("span",{class:"tag info",text:"Not in upload"}))));});
-  targetList.append(el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},el("th",{text:"SKU"}),el("th",{text:"Category"}),el("th",{class:"n",text:"System Qty"}),el("th",{class:"n",text:"Scanned"}),el("th",{text:"Status"}))),tb)));
+  targetList.append(el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},el("th",{text:"SKU"}),el("th",{text:"Seller"}),el("th",{text:"Category"}),el("th",{class:"n",text:"System Qty"}),el("th",{class:"n",text:"Scanned"}),el("th",{text:"Status"}))),tb)));
   card.append(targetList);
 
   let autoTimer=null;
@@ -1686,16 +1797,18 @@ function entryRow(shelf,skuIdx){
     const v=norm(sku.value), sys=target.get(v)||0, got=counted(v), cat=v?skuCategory(shelf,v):"";
     if(!v){mode.className="hint";mode.textContent="Ready for next SKU scan.";extraWrap.style.display="none";add.style.display="none";return}
     const desc=(skuIdx.get(v)||{}).desc||"";
+    const seller=(skuIdx.get(v)||{}).seller||sellerOf(v);
     const sysNote=sys?("System qty: "+fmt(sys)+"; extra scan is allowed."):"Not in the uploaded list — will be logged as an extra find.";
     if(isCosmetics(cat)){
-      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+"Cosmetics mode — Batch, MFG, Expiry and Qty are mandatory. "+sysNote;
+      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+(seller?"Seller: "+seller+" · ":"")+"Cosmetics mode — Batch, MFG, Expiry and Qty are mandatory. "+sysNote;
       extraWrap.style.display="grid";add.style.display="inline-flex";
       const q=Math.max(1,Math.floor(num(qty.value))||1);
       add.textContent="Confirm "+fmt(q)+" PC"+(q===1?"":"s");
       add.disabled=!(batch.value.trim()&&mfg.value&&exp.value&&q>=1);
     }else{
-      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+categoryLabel(cat)+" mode — 1 pc, confirms automatically. "+sysNote;
-      extraWrap.style.display="none";add.style.display="none";
+      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+(seller?"Seller: "+seller+" · ":"")+categoryLabel(cat)+" mode — 1 pc, confirms automatically. "+sysNote;
+      extraWrap.style.display="none";
+      if(KB){add.style.display="inline-flex";add.textContent="Add 1 PC";add.disabled=false}else add.style.display="none";
     }
   }
   /* Auto-confirm for Apparel/Electronics only once the scan has settled —
@@ -1704,9 +1817,10 @@ function entryRow(shelf,skuIdx){
      SKU is accepted, even one that isn't in the uploaded master list. */
   function scheduleAutoCommit(){
     clearTimeout(autoTimer);
+    if(KB)return;                       // typing by hand: confirm with Enter / the button, never mid-word
     autoTimer=setTimeout(()=>{
       const v=norm(sku.value); if(!v)return;
-      if(isCosmetics(skuCategory(shelf,v)))return;
+      if(isCosmetics(skuCategory(shelf,v))){goBatch(v);return}
       commit();
     },180);
   }
@@ -1714,25 +1828,40 @@ function entryRow(shelf,skuIdx){
   batch.addEventListener("input",paint);mfg.addEventListener("input",paint);exp.addEventListener("input",paint);qty.addEventListener("input",paint);
   sku.addEventListener("keydown",e=>{if(e.key!=="Enter")return;e.preventDefault();clearTimeout(autoTimer);paint();
     const v=norm(sku.value);if(!v)return;
-    if(isCosmetics(skuCategory(shelf,v)))batch.focus();else commit();});
+    if(isCosmetics(skuCategory(shelf,v)))goBatch(v);else commit();});
   batch.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();mfg.focus()}});
   mfg.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();exp.focus()}});
   exp.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();qty.focus();qty.select()}});
   qty.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();commit()}});
-  function commit(){
-    clearTimeout(autoTimer);
-    const v=norm(sku.value); if(!v){toast("Scan SKU first","err");sku.focus();return}
-    const cat=skuCategory(shelf,v);
-    let q=1;
-    if(isCosmetics(cat)){
-      if(!batch.value.trim()||!mfg.value||!exp.value){toast("Batch, MFG and Expiry are compulsory for Cosmetics","err");return}
-      if(!life(mfg.value,exp.value)){toast("Expiry must be after MFG date","err");return}
-      q=Math.max(1,Math.floor(num(qty.value))||1);
-    }
-    appendScan(shelf,v,{category:cat,batch:batch.value.trim(),mfg:mfg.value||"",exp:exp.value||"",qty:q});
-    batch.value="";mfg.value="";exp.value="";qty.value="1";sku.value="";extraWrap.style.display="none";add.style.display="none";
-    mode.className="hint ok";mode.textContent=fmt(q)+" pc saved. Scan the next SKU.";scheduleRender();
-    sku.focus();
+  let busy=false;
+  const clearEntry=()=>{batch.value="";mfg.value="";exp.value="";qty.value="1";sku.value="";sku._ok="";extraWrap.style.display="none";add.style.display="none"};
+  async function accept(v){
+    if(sku._ok===v)return true;
+    if(!(await checkExcess(shelf,v,target))){clearEntry();paint();setTimeout(()=>sku.focus(),30);return false}
+    sku._ok=v;return true;
+  }
+  async function goBatch(v){
+    if(busy)return;busy=true;
+    try{if(await accept(v))batch.focus()}finally{busy=false}
+  }
+  async function commit(){
+    if(busy)return;busy=true;
+    try{
+      clearTimeout(autoTimer);
+      const v=norm(sku.value); if(!v){toast("Scan SKU first","err");sku.focus();return}
+      if(!(await accept(v)))return;
+      const cat=skuCategory(shelf,v);
+      let q=1;
+      if(isCosmetics(cat)){
+        if(!batch.value.trim()||!mfg.value||!exp.value){toast("Batch, MFG and Expiry are compulsory for Cosmetics","err");return}
+        if(!life(mfg.value,exp.value)){toast("Expiry must be after MFG date","err");return}
+        q=Math.max(1,Math.floor(num(qty.value))||1);
+      }
+      if(appendScan(shelf,v,{category:cat,batch:batch.value.trim(),mfg:mfg.value||"",exp:exp.value||"",qty:q})===false)return;
+      clearEntry();
+      mode.className="hint ok";mode.textContent=fmt(q)+" pc saved. Scan the next SKU.";scheduleRender();
+      sku.focus();
+    }finally{busy=false}
   }
   setTimeout(()=>sku.focus(),40);
   return card;
@@ -1795,7 +1924,7 @@ function vSearch(host){
   host.append(el("p",{class:"sub",text:"Scan any SKU to see total system quantity against total scanned, then the shelf-by-shelf split. A shelf code works here too."}));
   if(!S.master.length&&!S.lines.length){host.append(noData("Nothing loaded to search"));return}
 
-  const inp=el("input",{class:"big",type:"search",placeholder:"Scan SKU or shelf code…",value:S.searchQ,autocomplete:"off"});
+  const inp=el("input",{class:"big",type:"search",placeholder:"Scan SKU or shelf code…",value:S.searchQ,autocomplete:"off",inputmode:KB?"text":"none","data-kb":"text"});
   const res=el("div",{});
   const run=()=>{S.searchQ=inp.value;res.replaceChildren(searchResult(norm(inp.value)))};
   inp.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();run();inp.select()}});
@@ -1846,13 +1975,14 @@ function searchResult(q){
       el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},
         el("th",{text:"SKU"}),el("th",{text:"Description"}),el("th",{class:"n",text:"System"}),
         el("th",{class:"n",text:"Physical"}),el("th",{class:"n",text:"Difference"}),el("th",{text:"By"}))),tb))));
-    box.append(el("button",{class:"btn hv",onclick(){S.activeShelf=q;S.view="scan";render()}},"Open this shelf"));
+    box.append(el("button",{class:"btn hv",async onclick(){if(!(await claimShelf(q)))return;S.activeShelf=q;S.view="scan";render()}},"Open this shelf"));
     return box;
   }
   const mRows=S.master.filter(r=>r.sku===q), lRows=S.lines.filter(l=>l.sku===q);
   const sys=mRows.reduce((s,r)=>s+r.qty,0), phy=lRows.reduce((s,l)=>s+l.qty,0);
   const desc=(mRows.filter(r=>r.desc)[0]||{}).desc||"";
   box.append(el("h3",{style:"font-size:24px",text:q+(desc?" · "+desc:"")}));
+  if(sellerOf(q))box.append(el("p",{class:"sub",text:"Seller: "+sellerOf(q)}));
   box.append(el("div",{class:"tiles"},
     tile("Total system qty",fmt(sys),mRows.length+" shelf location(s)","b"),
     tile("Total scanned qty",fmt(phy),lRows.length+" scan entries","y"),
@@ -1866,7 +1996,7 @@ function searchResult(q){
     const ls=lRows.filter(l=>l.shelf===sh), pq=ls.reduce((s,l)=>s+l.qty,0);
     const sub=S.shelfDone[sh];
     tb.append(el("tr",{},
-      el("td",{},el("button",{class:"btn ghost xs",onclick(){S.activeShelf=sh;S.view="scan";render()}},sh)),
+      el("td",{},el("button",{class:"btn ghost xs",async onclick(){if(!(await claimShelf(sh)))return;S.activeShelf=sh;S.view="scan";render()}},sh)),
       el("td",{class:"n",text:fmt(sq)}),
       el("td",{class:"n",text:ls.length?fmt(pq):"—"}),
       el("td",{class:"n",style:(pq-sq)&&ls.length?"color:var(--bad);font-weight:600":"",text:ls.length?sgn(pq-sq):"—"}),
@@ -2030,7 +2160,7 @@ function vSummary(host,t){
   const sc=el("div",{class:"card"});sc.append(el("h3",{text:"Bin-wise (shelf-wise) summary"}));
   const stb=el("tbody");
   t.stats.forEach(s=>stb.append(el("tr",{},
-    el("td",{},el("button",{class:"btn ghost xs",onclick(){S.activeShelf=s.shelf;S.view="scan";render()}},s.shelf)),
+    el("td",{},el("button",{class:"btn ghost xs",async onclick(){if(!(await claimShelf(s.shelf)))return;S.activeShelf=s.shelf;S.view="scan";render()}},s.shelf)),
     el("td",{class:"n",text:fmt(s.skuCounted)+" / "+fmt(s.skuTotal)}),
     el("td",{class:"n",text:fmt(s.sysQty)}),el("td",{class:"n",text:s.lines?fmt(s.cntQty):"—"}),
     el("td",{class:"n",style:s.diff&&s.lines?"color:var(--bad);font-weight:600":"",text:s.lines?sgn(s.diff):"—"}),
@@ -2058,14 +2188,14 @@ function vSummary(host,t){
   skuList.forEach(e=>kt.append(el("tr",{},
     el("td",{class:"code"},el("button",{class:"btn ghost xs",onclick(){S.searchQ=e.sku;S.view="search";render()}},e.sku),
       e.extra?el("span",{class:"tag info",style:"margin-left:5px",text:"extra"}):null),
-    el("td",{text:e.desc||"—"}),el("td",{class:"n",text:fmt(e.shelves.size)}),
+    el("td",{text:e.desc||"—"}),el("td",{text:sellerOf(e.sku)||"—"}),el("td",{class:"n",text:fmt(e.shelves.size)}),
     el("td",{class:"n",text:fmt(e.sys)}),el("td",{class:"n",text:e.n?fmt(e.phy):"—"}),
     el("td",{class:"n",style:e.diff?"color:var(--bad);font-weight:600":"",text:e.n?sgn(e.diff):"—"}),
     el("td",{text:[...e.who].join(", ")||"—"}),
     el("td",{},el("span",{class:"tag "+(!e.n?"idle":e.diff===0?"ok":e.diff>0?"info":"bad"),
       text:!e.n?"Not counted":e.diff===0?"Match":e.diff>0?"Over":"Short"})))));
   kc.append(el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},
-    el("th",{text:"SKU"}),el("th",{text:"Description"}),el("th",{class:"n",text:"Shelves"}),
+    el("th",{text:"SKU"}),el("th",{text:"Description"}),el("th",{text:"Seller"}),el("th",{class:"n",text:"Shelves"}),
     el("th",{class:"n",text:"Total system qty"}),el("th",{class:"n",text:"Total scanned qty"}),
     el("th",{class:"n",text:"Difference"}),el("th",{text:"Counted by"}),el("th",{text:"Result"}))),kt)));
   host.append(kc);
@@ -2145,9 +2275,9 @@ function csvFullReport(){
 }
 function csvScans(){
   const rows=userVisibleLines();
-  const g=hdr().concat([["Category","Shelf","SKU","Description","Batch","MFG","Expiry","Shelf Life (months)","Current Shelf Life %","Current Shelf Life (days)","Bracket","Qty Scanned","System Qty (shelf+SKU)","Scanned By","Scanned At","Shelf Status"]]);
+  const g=hdr().concat([["Category","Shelf","SKU","Description","Seller","Batch","MFG","Expiry","Shelf Life (months)","Current Shelf Life %","Current Shelf Life (days)","Bracket","Qty Scanned","System Qty (shelf+SKU)","Scanned By","Scanned At","Shelf Status"]]);
   rows.forEach(l=>{const L=life(l.mfg,l.exp),sys=systemSkuQty(l.shelf,l.sku),d=(S.master.filter(r=>r.sku===l.sku&&r.desc)[0]||{}).desc||"";
-    g.push([categoryLabel(l.category||shelfCategory(l.shelf)),l.shelf,l.sku,d,l.batch||"",l.mfg||"",l.exp||"",L?L.totalMonths.toFixed(2):"",L?L.pct.toFixed(2):"",L?L.remDays:"",L?(L.expired?"Expired":L.bracket.label):"No dates",l.qty,sys,l.byName||l.lastByName||"",lts(l.ts),isAdmin()&&S.shelfDone[l.shelf]?"Completed":S.shelfDone[l.shelf]&&S.shelfDone[l.shelf].by===S.me.id?"Completed":"Open"])});
+    g.push([categoryLabel(l.category||shelfCategory(l.shelf)),l.shelf,l.sku,d,sellerOf(l.sku),l.batch||"",l.mfg||"",l.exp||"",L?L.totalMonths.toFixed(2):"",L?L.pct.toFixed(2):"",L?L.remDays:"",L?(L.expired?"Expired":L.bracket.label):"No dates",l.qty,sys,l.byName||l.lastByName||"",lts(l.ts),isAdmin()&&S.shelfDone[l.shelf]?"Completed":S.shelfDone[l.shelf]&&S.shelfDone[l.shelf].by===S.me.id?"Completed":"Open"])});
   return g;
 }
 function csvBins(){
@@ -2171,11 +2301,11 @@ function csvSkus(){
     e.phy+=l.qty;e.n++;e.sh.add(l.shelf);if(l.byName)e.who.add(l.byName);
     const L=life(l.mfg,l.exp); if(L&&(e.worst===null||L.pct<e.worst))e.worst=L.pct;
     m.set(l.sku,e)});
-  const g=hdr().concat([["SKU","Description","Shelves","Total System Qty","Total Scanned Qty","Difference",
+  const g=hdr().concat([["SKU","Description","Seller","Shelves","Total System Qty","Total Scanned Qty","Difference",
     "Difference %","Worst Life %","Bracket","Counted By","Result"]]);
   [...m.entries()].sort((a,b)=>a[0]<b[0]?-1:1).forEach(p=>{const sku=p[0],e=p[1];
     const d=e.phy-e.sys;
-    g.push([sku,e.desc,e.sh.size,e.sys,e.n?e.phy:"",e.n?d:"",
+    g.push([sku,e.desc,sellerOf(sku),e.sh.size,e.sys,e.n?e.phy:"",e.n?d:"",
       e.sys?(d/e.sys*100).toFixed(2):"", e.worst===null?"":e.worst.toFixed(2),
       e.worst===null?"No dates":bracketOf(e.worst).label,[...e.who].join(" / "),
       !e.n?"Not counted":d===0?"Match":d>0?"Over":"Short"])});
