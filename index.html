@@ -646,13 +646,13 @@ function save(...what){
 const SETTING_KEYS=["job","author","site","minLifePct"];
 const settingsSig=()=>JSON.stringify(SETTING_KEYS.map(k=>S.cfg[k]));
 const SYNC_LS="wms.sync.v3";
-S.sync={dirtyIds:new Set(),deletedIds:new Set(),rev:0,mver:"",doneSnap:{},userSnap:{},cfgSnap:"",fails:0};
+S.sync={dirtyIds:new Set(),deletedIds:new Set(),tomb:new Set(),rev:0,mver:"",doneSnap:{},userSnap:{},cfgSnap:"",fails:0};
 let pT=null,syncing=false,syncAgain=false,pullT=null;
-function snapSync(){try{localStorage.setItem(SYNC_LS,JSON.stringify({d:[...S.sync.dirtyIds],x:[...S.sync.deletedIds],rev:S.sync.rev,mver:S.sync.mver,
+function snapSync(){try{localStorage.setItem(SYNC_LS,JSON.stringify({d:[...S.sync.dirtyIds],x:[...S.sync.deletedIds],t:[...S.sync.tomb].slice(-4000),rev:S.sync.rev,mver:S.sync.mver,
   ds:S.sync.doneSnap,us:S.sync.userSnap,cs:S.sync.cfgSnap,task:S.cfg.taskId}))}catch(e){}}
 function loadSync(){try{const o=JSON.parse(localStorage.getItem(SYNC_LS)||"null");if(!o)return;
   if(o.task&&o.task!==S.cfg.taskId)return;
-  S.sync.dirtyIds=new Set(o.d||[]);S.sync.deletedIds=new Set(o.x||[]);S.sync.rev=o.rev||0;S.sync.mver=o.mver||"";
+  S.sync.dirtyIds=new Set(o.d||[]);S.sync.deletedIds=new Set(o.x||[]);S.sync.tomb=new Set(o.t||[]);S.sync.rev=o.rev||0;S.sync.mver=o.mver||"";
   S.sync.doneSnap=o.ds||{};S.sync.userSnap=o.us||{};S.sync.cfgSnap=o.cs||""}catch(e){}}
 function cloudReady(){return !SANDBOX&&/^https:\/\/script\.google(usercontent)?\.com\//.test(String(S.cloud.url||"").trim())&&!!S.cloud.key}
 function cloudChip(txt,cls){const c=$("#cloudChip");if(!c)return;
@@ -661,7 +661,7 @@ function queuePush(ms){clearTimeout(pT);pT=setTimeout(()=>{syncOnce().catch(()=>
 
 /* What has changed on this device and still has to go to the Sheet. */
 function pendingInfo(){
-  const lines=[];for(const id of S.sync.dirtyIds){const l=S.idx.lineKey.get(id);if(l)lines.push(l)}
+  const lines=[];for(const id of S.sync.dirtyIds){if(S.sync.tomb.has(id))continue;const l=S.idx.lineKey.get(id);if(l)lines.push(l)}
   const doneOps={};
   for(const k in S.shelfDone){if(S.sync.doneSnap[k]!==JSON.stringify(S.shelfDone[k]))doneOps[k]=S.shelfDone[k]}
   const usersUp=S.users.filter(u=>S.sync.userSnap[u.id]!==JSON.stringify(u));
@@ -780,7 +780,7 @@ function applyServer(d,p,x){
     const taskChanged=String(d.taskId||"")!==String(S.cfg.taskId||"");
     if(d.master){S.master=d.master;BIG.m=true;changed=true}
     if(taskChanged){
-      S.lines=d.lines||[];S.sync.dirtyIds.clear();S.sync.deletedIds.clear();
+      S.lines=d.lines||[];S.sync.dirtyIds.clear();S.sync.deletedIds.clear();S.sync.tomb.clear();
       S.cfg=Object.assign({},S.cfg,d.cfg||{},{taskId:d.taskId});S.shelfDone={};
       S.activeShelf=null;S.editId=null;changed=true;BIG.l=true;
       S.sync.cfgSnap="";
@@ -789,10 +789,10 @@ function applyServer(d,p,x){
       const sent=new Set((p.lines||[]).map(l=>String(l.id)));
       const srvIds=new Set((d.lines||[]).map(l=>String(l.id)));
       const keep=S.lines.filter(l=>{const id=String(l.id);return !srvIds.has(id)&&(S.sync.dirtyIds.has(id)||sent.has(id))});
-      S.lines=(d.lines||[]).concat(keep);changed=true;BIG.l=true;
+      S.lines=(d.lines||[]).filter(l=>!S.sync.tomb.has(String(l.id))).concat(keep);changed=true;BIG.l=true;
     }else if((d.lines&&d.lines.length)||(d.deleted&&d.deleted.length)){
       const map=new Map(S.lines.map(l=>[String(l.id),l]));
-      for(const l of d.lines||[]){const id=String(l.id);if(S.sync.dirtyIds.has(id))continue;map.set(id,l)}
+      for(const l of d.lines||[]){const id=String(l.id);if(S.sync.dirtyIds.has(id)||S.sync.tomb.has(id))continue;map.set(id,l)}
       for(const id of d.deleted||[]){if(!S.sync.dirtyIds.has(String(id)))map.delete(String(id))}
       S.lines=[...map.values()];changed=true;BIG.l=true;
     }
@@ -842,6 +842,9 @@ async function syncOnce(o){
       for(;;){try{d.master=await fetchMaster(d.mver);break}catch(e){if(e&&e.restart&&tries++<2)continue;throw e}}
     }
     changed=applyServer(d,p,x);
+    if(d.gone&&d.gone.length){
+      d.gone.forEach(id=>S.sync.tomb.add(String(id)));
+      const gs=new Set(d.gone.map(String));if(S.lines.some(l=>gs.has(String(l.id)))){S.lines=S.lines.filter(l=>!gs.has(String(l.id)));rebuildIndexes();BIG.l=true;changed=true}}
     if(d.rejected&&d.rejected.length){
       const rj=new Set(d.rejected.map(String));S.lines=S.lines.filter(l=>!rj.has(String(l.id)));rebuildIndexes();BIG.l=true;changed=true;
       rejInfo.rejected=d.rejected.length;
@@ -1019,6 +1022,7 @@ function restoreScroll(k){window.scrollTo(k.x,k.y);document.querySelectorAll(".s
 function render(){
   const root=$("#root");
   S.formDirty=null;
+  if(S._kd){document.removeEventListener("keydown",S._kd,true);S._kd=null}
   const scrollKey=S.view+"|"+(S.activeShelf||"")+"|"+(S.me?S.me.id:"");
   const keepScroll=(S.booted&&S.me&&_scrollKey===scrollKey)?captureScroll():null;
   if(!S.booted){root.replaceChildren(el("div",{class:"gate"},el("p",{class:"muted",text:"Loading…"})));return}
@@ -1800,11 +1804,11 @@ async function deleteScanLine(id){
   const keys=Object.keys(l.userQty||{});
   if(isAdmin()||keys.length<=1||mine>=num(l.qty)){
     S.lines=S.lines.filter(x=>String(x.id)!==String(id));
-    S.sync.deletedIds.add(String(id));S.sync.dirtyIds.delete(String(id));
+    S.sync.deletedIds.add(String(id));S.sync.tomb.add(String(id));S.sync.dirtyIds.delete(String(id));
   }else{
     l.qty=Math.max(0,num(l.qty)-mine);delete l.userQty[S.me.id];
     l.byNames=(l.byNames||[]).filter(n=>n!==S.me.name);
-    if(l.qty<=0){S.lines=S.lines.filter(x=>String(x.id)!==String(id));S.sync.deletedIds.add(String(id));S.sync.dirtyIds.delete(String(id))}
+    if(l.qty<=0){S.lines=S.lines.filter(x=>String(x.id)!==String(id));S.sync.deletedIds.add(String(id));S.sync.tomb.add(String(id));S.sync.dirtyIds.delete(String(id))}
     else S.sync.dirtyIds.add(String(id));
   }
   rebuildIndexes();   // the index must be rebuilt, otherwise the deleted row stays on screen
@@ -1951,15 +1955,16 @@ function entryRow(shelf,skuIdx){
       paint();focusNoKb(batch);
     }else commit();
   }
-  /* Auto-confirm (scanner without Enter suffix) only when the keyboard is OFF - typing by hand must never auto-save a half-typed code. */
+  /* Scanner without Enter suffix: save only after the code has been quiet for 0.7 s (slow scanners type char by char, so a short
+     timer used to save half a code). Never while the keyboard is ON - typing by hand must not auto-save. */
   function scheduleAutoCommit(){
     clearTimeout(autoTimer);
     if(S.kb)return;
     autoTimer=setTimeout(()=>{
-      const v=cleanCode(); if(!v||gating)return;
+      const v=cleanCode(); if(!v||gating||v.length<6)return;
       if(isCosmetics(skuCategory(shelf,v)))return;
       commit();
-    },180);
+    },700);
   }
   sku.addEventListener("input",()=>{paint();scheduleAutoCommit()});
   batch.addEventListener("input",paint);mfg.addEventListener("input",paint);exp.addEventListener("input",paint);qty.addEventListener("input",paint);
@@ -1982,11 +1987,28 @@ function entryRow(shelf,skuIdx){
     }
     const flags=await gate(v);
     if(!flags){resetForm();mode.className="hint bad";mode.textContent="Scan discarded — nothing saved.";focusNoKb(sku);return}
+    /* a scanner that reads the same label twice in a flash must not count 2 pcs */
+    const nowT=Date.now(),lastS=S._lastScan||{};
+    if(lastS.v===v&&lastS.shelf===shelf&&nowT-lastS.t<450&&!isCosmetics(cat)){
+      resetForm();mode.className="hint bad";mode.textContent="Duplicate read ignored — same code within 0.5 s.";S._lastScan={v,shelf,t:nowT};focusNoKb(sku);return}
+    S._lastScan={v,shelf,t:nowT};
     appendScan(shelf,v,{category:cat,batch:batch.value.trim(),mfg:mfg.value||"",exp:exp.value||"",qty:q,extra:!!flags.extra,nonNum:!!flags.nonNum});
     resetForm();
     mode.className="hint ok";mode.textContent=fmt(q)+" pc saved"+(flags.extra?" as EXCESS":"")+". Scan the next SKU.";scheduleRender();
     focusNoKb(sku);
   }
+  /* Scanner keystrokes must never be lost: if focus slipped off the SKU box (tap on page, keyboard toggle, device quirk),
+     the keys are collected here and handed to the SKU box when the scanner sends Enter. */
+  if(S._kd){document.removeEventListener("keydown",S._kd,true);S._kd=null}
+  let kbuf="",kT=null;
+  S._kd=e=>{
+    if(MODAL_OPEN>0||gating||e.ctrlKey||e.altKey||e.metaKey)return;
+    const t=e.target;if(t&&/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))return;
+    if(e.key==="Enter"){if(kbuf.length>=3){e.preventDefault();sku.value=kbuf;kbuf="";paint();handleEnter()}else kbuf="";return}
+    if(e.key&&e.key.length===1){kbuf+=e.key;clearTimeout(kT);kT=setTimeout(()=>{kbuf=""},500)}
+  };
+  document.addEventListener("keydown",S._kd,true);
+  sku.addEventListener("blur",()=>{if(S.kb)return;setTimeout(()=>{if(MODAL_OPEN===0&&!gating&&sku.isConnected&&(!document.activeElement||document.activeElement===document.body))focusNoKb(sku)},150)});
   setTimeout(()=>focusNoKb(sku),40);
   return card;
 }
