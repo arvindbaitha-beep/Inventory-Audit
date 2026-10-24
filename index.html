@@ -358,6 +358,24 @@ th.actc{background:var(--panel-2);z-index:3}
 .tag.nn{background:#ffe9e9;color:#b02a2a;border-color:#f2a3a3}
 .binlock{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 
+.kbgrp{display:inline-flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.scan-sticky{position:sticky;top:68px;z-index:20;background:#fff;padding:8px 0 6px;border-bottom:1px solid var(--rule)}
+@media(max-width:920px){.scan-sticky{top:58px}}
+.live-strip{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px;margin-bottom:8px;align-items:center}
+.live-strip b{font-variant-numeric:tabular-nums}
+.live-strip .var.bad b{color:var(--bad)}.live-strip .var.warn b{color:#b56c00}.live-strip .var.ok b{color:var(--ok)}
+.live-strip .pend{color:#b56c00;font-weight:700}.live-strip .okk{color:var(--ok);font-weight:700}
+.live-strip .saved{color:#067a7a;font-size:12px;margin-left:auto}
+.scan-status{margin-top:8px;padding:10px 12px;border-radius:10px;font:700 17px/1.3 var(--mono);word-break:break-all;border:2px solid var(--rule)}
+.scan-status.ok{background:#e9f8ef;border-color:#58c27d;color:#12663a}
+.scan-status.warn{background:#fff3d9;border-color:#f0c36d;color:#8a5200}
+.scan-status.bad{background:#ffe9e9;border-color:#e46a6a;color:#a31919}
+.scan-status.idle{background:var(--panel-2);color:var(--ink-2);font-weight:500;font-size:14px}
+.scan-log{margin-top:6px;font-size:12px}
+.scan-log .lg{display:flex;gap:10px;padding:2px 0;border-bottom:1px dotted var(--rule)}
+.scan-log .lg.bad{color:#a31919}.scan-log .lg.warn{color:#8a5200}
+tr.hit td{background:#e9f8ef!important}
+
 </style>
 </head>
 <body>
@@ -393,6 +411,7 @@ const S={
   booted:false, dirty:{master:false,lines:false,state:false,users:false}
 };
 S.kb=(()=>{try{return localStorage.getItem("wms.kb")==="1"}catch(e){return false}})();
+S.kbm=(()=>{try{return localStorage.getItem("wms.kbm")==="none"?"none":"compat"}catch(e){return"compat"}})();
 let DB=null, DL=null;
 let VER=0,_tot=null,_totV=-1;   // data version: totals() is cached until something changes
 const SANDBOX = !!(typeof window!=="undefined" && window.claude && window.claude.use);
@@ -451,19 +470,29 @@ let MODAL_OPEN=0,LAST_TOUCH=0;
 ["touchstart","touchmove","pointerdown","wheel","scroll"].forEach(ev=>document.addEventListener(ev,()=>{LAST_TOUCH=Date.now()},{capture:true,passive:true}));
 function focusNoKb(i){if(!i)return;try{i.focus({preventScroll:true})}catch(e){try{i.focus()}catch(_){}}}
 function kbLabel(){return S.kb?"⌨ Keyboard ON":"⌨ Keyboard OFF"}
-/* Soft keyboard stays closed on scanner devices until the user taps the Keyboard button. */
+const kbmLabel=()=>"Scan mode "+(S.kbm==="none"?"B":"A");
+function hideKb(){if(S.kb)return;try{if(navigator.virtualKeyboard&&navigator.virtualKeyboard.hide)navigator.virtualKeyboard.hide()}catch(e){}}
+/* Keyboard OFF, mode A (default): the box is a normal text box (so every scanner type can write into it) but the browser is told
+   not to pop the keyboard up by itself. Mode B additionally sets inputmode=none (hides the keyboard harder, but a few scanners cannot type then). */
 function kbAttrs(i,kind){i.dataset.kbkind=kind||"text";
-  i.setAttribute("inputmode",S.kb?(kind==="numeric"?"numeric":"text"):"none");
-  i.setAttribute("virtualkeyboardpolicy",S.kb?"auto":"manual");return i}
-function kbButton(focusEl){
+  if(S.kb){i.setAttribute("inputmode",kind==="numeric"?"numeric":"text");i.setAttribute("virtualkeyboardpolicy","auto")}
+  else{if(S.kbm==="none")i.setAttribute("inputmode","none");else i.removeAttribute("inputmode");i.setAttribute("virtualkeyboardpolicy","manual")}
+  return i}
+function kbButton(focusEl,onChange){
+  const wrap=el("span",{class:"kbgrp"});
   const b=el("button",{type:"button",class:"btn ghost sm kbtog"+(S.kb?" on":""),title:"Open / close the on-screen keyboard"},kbLabel());
-  b.addEventListener("mousedown",e=>e.preventDefault());           // keep focus where it is
-  b.addEventListener("click",()=>{S.kb=!S.kb;try{localStorage.setItem("wms.kb",S.kb?"1":"0")}catch(e){}
-    document.querySelectorAll("[data-kbkind]").forEach(i=>kbAttrs(i,i.dataset.kbkind));
+  const m=el("button",{type:"button",class:"btn ghost sm kbmode",title:"If the scanner does not type while Keyboard is OFF, switch between A and B"},kbmLabel());
+  [b,m].forEach(x=>x.addEventListener("mousedown",e=>e.preventDefault()));
+  const reapply=()=>{document.querySelectorAll("[data-kbkind]").forEach(i=>kbAttrs(i,i.dataset.kbkind));
     document.querySelectorAll(".kbtog").forEach(x=>{x.textContent=kbLabel();x.classList.toggle("on",S.kb)});
+    document.querySelectorAll(".kbmode").forEach(x=>{x.textContent=kbmLabel()});
     const f=typeof focusEl==="function"?focusEl():focusEl;
-    if(f){f.blur();setTimeout(()=>{focusNoKb(f);if(S.kb&&navigator.virtualKeyboard&&navigator.virtualKeyboard.show){try{navigator.virtualKeyboard.show()}catch(e){}}},40)}});
-  return b}
+    if(f){f.blur();setTimeout(()=>{focusNoKb(f);if(S.kb){if(navigator.virtualKeyboard&&navigator.virtualKeyboard.show){try{navigator.virtualKeyboard.show()}catch(e){}}}else hideKb()},40)}
+    if(onChange)onChange()};
+  b.addEventListener("click",()=>{S.kb=!S.kb;try{localStorage.setItem("wms.kb",S.kb?"1":"0")}catch(e){}reapply()});
+  m.addEventListener("click",()=>{S.kbm=S.kbm==="none"?"compat":"none";try{localStorage.setItem("wms.kbm",S.kbm)}catch(e){}reapply();
+    toast(S.kbm==="none"?"Scan mode B: keyboard hidden harder (use if keyboard keeps popping up)":"Scan mode A: normal input (use if the scanner does not type)","good")});
+  wrap.append(b,m);return wrap}
 function uiModal(build,tone){
   return new Promise(resolve=>{
     const back=el("div",{class:"mdl-back"}),box=el("div",{class:"mdl "+(tone||""),tabindex:"-1",role:"dialog","aria-modal":"true"});
@@ -654,20 +683,29 @@ function loadSync(){try{const o=JSON.parse(localStorage.getItem(SYNC_LS)||"null"
   if(o.task&&o.task!==S.cfg.taskId)return;
   S.sync.dirtyIds=new Set(o.d||[]);S.sync.deletedIds=new Set(o.x||[]);S.sync.tomb=new Set(o.t||[]);S.sync.rev=o.rev||0;S.sync.mver=o.mver||"";
   S.sync.doneSnap=o.ds||{};S.sync.userSnap=o.us||{};S.sync.cfgSnap=o.cs||""}catch(e){}}
+/* While a bin is open for scanning, NOTHING goes over the internet: scans are saved on the device and uploaded by Submit only. */
+function syncPaused(){return !!(S.view==="scan"&&S.activeShelf&&S.me&&S.cfg.taskStatus!=="COMPLETE"&&!S.shelfDone[S.activeShelf]&&lockState(S.activeShelf)==="mine")}
+function scanChip(){if(!S.activeShelf)return;const n=lineRows(S.activeShelf).reduce((a,l)=>a+num(l.qty),0);cloudChip("📦 "+fmt(n)+" pcs saved on device · uploads on Submit","live")}
 function cloudReady(){return !SANDBOX&&/^https:\/\/script\.google(usercontent)?\.com\//.test(String(S.cloud.url||"").trim())&&!!S.cloud.key}
 function cloudChip(txt,cls){const c=$("#cloudChip");if(!c)return;
   c.className="chip"+(cls?" "+cls:"");c.textContent=txt}
 function queuePush(ms){clearTimeout(pT);pT=setTimeout(()=>{syncOnce().catch(()=>{})},ms||1500)}
 
 /* What has changed on this device and still has to go to the Sheet. */
-function pendingInfo(){
-  const lines=[];for(const id of S.sync.dirtyIds){if(S.sync.tomb.has(id))continue;const l=S.idx.lineKey.get(id);if(l)lines.push(l)}
+function pendingInfo(o){
+  o=o||{};
+  const lines=[],seen=new Set();
+  for(const id of S.sync.dirtyIds){if(S.sync.tomb.has(id))continue;const l=S.idx.lineKey.get(id);if(!l)continue;
+    if(!S.shelfDone[l.shelf]&&S.idx.masterShelf.has(l.shelf)&&l.shelf!==o.shelf)continue;   // bin not submitted yet: scans stay on the device
+    lines.push(l);seen.add(String(id))}
+  if(o.shelf&&S.me){lineRows(o.shelf).forEach(l=>{const id=String(l.id);if(seen.has(id)||S.sync.tomb.has(id))return;
+    if(isAdmin()||l.by===S.me.id||(l.userQty&&l.userQty[S.me.id]!=null)){lines.push(l);seen.add(id)}})}
   const doneOps={};
   for(const k in S.shelfDone){if(S.sync.doneSnap[k]!==JSON.stringify(S.shelfDone[k]))doneOps[k]=S.shelfDone[k]}
   const usersUp=S.users.filter(u=>S.sync.userSnap[u.id]!==JSON.stringify(u));
   const usersDel=Object.keys(S.sync.userSnap).filter(id=>!S.users.some(u=>u.id===id));
   const cfgPatch=(S.cfg.taskId&&settingsSig()!==S.sync.cfgSnap)?SETTING_KEYS.reduce((o,k)=>(o[k]=S.cfg[k],o),{}):null;
-  return{taskId:S.cfg.taskId||"",since:S.sync.rev,mver:S.sync.mver,lines,deletedIds:[...S.sync.deletedIds],doneOps,usersUp,usersDel,cfgPatch,cver:CVER,dev:DEV,by:S.me?S.me.id:""};
+  return{taskId:S.cfg.taskId||"",since:S.sync.rev,mver:S.sync.mver,lines,deletedIds:o.shelf?[...S.sync.deletedIds]:[],doneOps,usersUp,usersDel,cfgPatch,cver:CVER,dev:DEV,by:S.me?S.me.id:""};
 }
 const emptyPending=()=>({taskId:S.cfg.taskId||"",since:S.sync.rev,mver:S.sync.mver,lines:[],deletedIds:[],doneOps:{},usersUp:[],usersDel:[],cfgPatch:null,cver:CVER,dev:DEV,by:S.me?S.me.id:""});
 const hasPending=p=>!!(p.lines.length||p.deletedIds.length||Object.keys(p.doneOps).length||p.usersUp.length||p.usersDel.length||p.cfgPatch);
@@ -799,7 +837,10 @@ function applyServer(d,p,x){
     /* settings + task state */
     const mine={};SETTING_KEYS.forEach(k=>{mine[k]=S.cfg[k]});
     const keepMine=!taskChanged&&settingsSig()!==x.cfgSigSent;
-    if(!taskChanged)S.cfg=Object.assign({},S.cfg,d.cfg||{});
+    if(!taskChanged){
+      const off=Object.entries(S.cfg.shelfLocks||{}).filter(([k,v])=>v&&v.offline&&S.me&&v.by===S.me.id);
+      S.cfg=Object.assign({},S.cfg,d.cfg||{});
+      off.forEach(([k,v])=>{S.cfg.shelfLocks=S.cfg.shelfLocks||{};if(!S.cfg.shelfLocks[k]&&!S.shelfDone[k])S.cfg.shelfLocks[k]=v})}
     if(keepMine)Object.assign(S.cfg,mine);
     S.cfg.taskId=d.taskId;
     S.sync.cfgSnap=keepMine?x.cfgSigSent:settingsSig();
@@ -827,11 +868,12 @@ async function migrateToCloud(){
 async function syncOnce(o){
   o=o||{};
   if(!cloudReady())return{ok:false,error:"Sheet not linked"};
+  if(!o.force&&syncPaused())return{ok:true,paused:true};
   if(syncing){syncAgain=true;return{ok:true,queued:true}}
   syncing=true;syncAgain=false;
-  const p=(o.pullOnly||(!S.cloud.auto&&!o.manual))?emptyPending():pendingInfo();
+  const p=(o.pullOnly||(!S.cloud.auto&&!o.manual))?emptyPending():pendingInfo(o);
   const inflight=p.lines.map(l=>String(l.id)),inflightDel=p.deletedIds.slice();
-  if(hasPending(p)){S.sync.dirtyIds.clear();S.sync.deletedIds.clear();cloudChip("Syncing…")}
+  if(hasPending(p)){inflight.forEach(id=>S.sync.dirtyIds.delete(id));inflightDel.forEach(id=>S.sync.deletedIds.delete(id));cloudChip("Syncing…")}
   const x={usersSig:JSON.stringify(S.users),doneSig:JSON.stringify(S.shelfDone),cfgSigSent:settingsSig()};
   let ok=false,changed=false,err="";const rejInfo={};
   try{
@@ -846,9 +888,10 @@ async function syncOnce(o){
       d.gone.forEach(id=>S.sync.tomb.add(String(id)));
       const gs=new Set(d.gone.map(String));if(S.lines.some(l=>gs.has(String(l.id)))){S.lines=S.lines.filter(l=>!gs.has(String(l.id)));rebuildIndexes();BIG.l=true;changed=true}}
     if(d.rejected&&d.rejected.length){
-      const rj=new Set(d.rejected.map(String));S.lines=S.lines.filter(l=>!rj.has(String(l.id)));rebuildIndexes();BIG.l=true;changed=true;
-      rejInfo.rejected=d.rejected.length;
-      toast(d.rejected.length+" scan(s) rejected by server: bin is locked by another user or already submitted","err")}
+      rejInfo.rejected=d.rejected.length;      // the scans are KEPT on the device - nothing is thrown away
+      toast(d.rejected.length+" scan(s) not accepted by server: bin is locked by another user or already submitted. Data is safe on this device.","err")}
+    rejInfo.ack=d.ack||{};
+    if(o.shelf){const gs=new Set((d.gone||[]).map(String));const L=p.lines.filter(l=>l.shelf===o.shelf&&!gs.has(String(l.id)));rejInfo.sentAck={n:L.length,q:L.reduce((a,l)=>a+num(l.qty),0)}}
     if(d.rejectedOps&&d.rejectedOps.length){
       d.rejectedOps.forEach(sh=>{delete S.shelfDone[sh];delete S.sync.doneSnap[sh]});rebuildIndexes();changed=true;
       rejInfo.rejectedOps=d.rejectedOps.slice();
@@ -1533,7 +1576,11 @@ async function claimShelf(shelf,takeover){
     if(e&&/^DEVICE_LOCK/.test(e.message||"")&&!takeover){
       const ok=await uiConfirm({title:"Bin dusre device pe khula hai",body:"Yeh bin aapke kisi aur device pe open hai. Yahan le aayein? Wo device scanning band kar dega.",ok:"Yes, take over",tone:"warn"});
       return ok?claimShelf(shelf,true):false}
-    toast(e&&e.network?"Internet chahiye — bin lock nahi ho paya":(e&&e.message)||"Lock failed","err");
+    if(e&&e.network){
+      const ok=await uiConfirm({title:"Internet nahi hai",body:"Bin abhi server pe lock nahi ho sakta. Offline start karein? Scans device me save honge. Submit ke time server lock check karega — agar tab tak koi aur ye bin le chuka hoga to submit reject hoga.",ok:"Start offline",cancel:"Cancel",tone:"warn"});
+      if(ok){S.cfg.shelfLocks=S.cfg.shelfLocks||{};S.cfg.shelfLocks[shelf]={by:S.me.id,byName:S.me.name,at:new Date().toISOString(),dev:DEV,offline:true};save("state");return true}
+      return false}
+    toast((e&&e.message)||"Lock failed","err");
     return false;
   }finally{close()}
 }
@@ -1681,6 +1728,7 @@ function scanShelf(host){
   const locked=st.done;
   if(S.cfg.taskStatus==="COMPLETE"){host.append(el("div",{class:"banner",text:"Audit task completed — this bin is locked."}));return}
   const ls=locked?"done":lockState(shelf);
+  S._fast=null;S._heavy=null;S._entryFast=null;
 
   host.append(el("div",{class:"row",style:"margin-bottom:10px"},
     el("button",{class:"btn ghost sm",onclick(){leaveShelf(shelf)}},"← All shelves"),
@@ -1691,12 +1739,15 @@ function scanShelf(host){
       text:"submitted by "+st.sub.byName+" · "+tstamp(st.sub.at)}):null));
 
   /* System / Physical / Variance stay on top so the user can check them before submitting */
-  host.append(el("div",{class:"tiles"},
-    tile("System qty",fmt(st.sysQty),st.skuTotal+" SKU on this shelf","b"),
-    tile("Physical counted",fmt(st.cntQty),st.lines+" entries","y"),
-    tile("Variance",st.lines?sgn(st.diff):"—",st.sysQty?(st.diff/st.sysQty*100).toFixed(1)+"%":"",st.diff?"r":"g"),
-    tile("SKU progress",fmt(st.skuCounted)+"<small> / "+fmt(st.skuTotal)+"</small>",
-      st.extraSku?st.extraSku+" extra found":"","g")));
+  const tilesHost=el("div");
+  const fillTiles=()=>{const s2=shelfStat(shelf);
+    tilesHost.replaceChildren(el("div",{class:"tiles"},
+      tile("System qty",fmt(s2.sysQty),s2.skuTotal+" SKU on this shelf","b"),
+      tile("Physical counted",fmt(s2.cntQty),s2.lines+" entries","y"),
+      tile("Variance",s2.lines?sgn(s2.diff):"—",s2.sysQty?(s2.diff/s2.sysQty*100).toFixed(1)+"%":"",s2.diff?"r":"g"),
+      tile("SKU progress",fmt(s2.skuCounted)+"<small> / "+fmt(s2.skuTotal)+"</small>",
+        s2.extraSku?s2.extraSku+" extra found":"","g")))};
+  fillTiles();host.append(tilesHost);
 
   if(locked){
     host.append(el("div",{class:"banner",text:"This shelf is submitted and locked. Reopen it to change anything."}));
@@ -1713,8 +1764,10 @@ function scanShelf(host){
     if(!isAdmin())return;
   }
   const readOnly=locked||ls!=="mine";
-  host.append(shelfLineTable(shelf,readOnly));
-  host.append(shelfRecon(shelf,st,readOnly));
+  const linesHost=el("div"),reconHost=el("div");
+  const heavy=()=>{const s2=shelfStat(shelf);linesHost.replaceChildren(shelfLineTable(shelf,readOnly));reconHost.replaceChildren(shelfRecon(shelf,s2,readOnly))};
+  heavy();host.append(linesHost,reconHost);
+  if(!readOnly){S._heavy=heavy;S._fast=()=>{fillTiles();if(S._entryFast)S._entryFast()}}
 }
 
 async function reopenShelf(shelf){
@@ -1734,6 +1787,7 @@ async function reopenShelf(shelf){
 
 /* Submit: server confirms the bin is saved + locked before the user moves on. */
 async function waitSync(){for(let i=0;i<120&&syncing;i++)await sleepMs(150)}
+/* Submit = the ONLY moment scans travel to Google Sheet. The server answers with what it stored; we compare it with what we sent. */
 async function submitShelf(shelf){
   if(!lockOk(shelf)){toast("Bin lock aapke paas nahi hai — shelf list se dobara kholein","err");render();return}
   const st=shelfStat(shelf),rec=reconcile(shelf),pend=rec.filter(r=>!r.touched).length;
@@ -1744,28 +1798,36 @@ async function submitShelf(shelf){
       el("div",{style:st.diff?"border-color:var(--bad-line);color:var(--bad)":""},el("b",{text:sgn(st.diff)}),el("span",{text:"Variance"}))),
     el("div",{text:"SKU counted "+st.skuCounted+" / "+st.skuTotal+(st.extraSku?" · "+st.extraSku+" extra SKU":"")}),
     pend?el("div",{style:"color:var(--bad);margin-top:6px",text:pend+" SKU not counted — they will be reported short."}):null,
-    el("div",{class:"hint",text:"Submit ke baad bin lock ho jayega aur aapka user lock free ho jayega."}));
+    el("div",{class:"hint",text:"Submit pe data Google Sheet me jayega (internet chahiye). Server confirm karega, uske baad bin lock hoga."}));
   if(!(await uiConfirm({title:"Submit bin "+shelf+"?",body,ok:"Yes, submit bin",cancel:"No, go back",tone:"ok"})))return;
+  clearTimeout(S._hvT);
   S.shelfDone[shelf]={by:S.me.id,byName:S.me.name,at:new Date().toISOString()};
   save("state");
-  let r={ok:true};
+  let r={ok:true},confirmed=null;
   if(cloudReady()){
-    const close=uiBusy("Submitting bin "+shelf+"…");
+    const close=uiBusy("Uploading bin "+shelf+" to Google Sheet…");
     try{
-      await waitSync();
-      r=await syncOnce({manual:true,timeout:45000,noRender:true});
-      if(r.queued){await waitSync();r=await syncOnce({manual:true,timeout:45000,noRender:true})}
+      for(let i=0;i<3;i++){
+        await waitSync();
+        r=await syncOnce({manual:true,force:true,shelf:shelf,timeout:60000,noRender:true});
+        if(!r.queued)break;
+      }
     }finally{close()}
+    const exp=r.sentAck,got=r.ack&&r.ack[shelf];
+    if(r.ok&&!r.queued&&!(r.rejectedOps&&r.rejectedOps.indexOf(shelf)>=0)&&!r.rejected){
+      if(exp&&exp.n>0&&(!got||got.n!==exp.n||got.q!==exp.q)){r={ok:false,error:"server count mismatch (sent "+exp.q+" pcs, server stored "+(got?got.q:0)+")"}}
+      else confirmed=got||exp||null;
+    }
   }
-  const rejected=r.rejectedOps&&r.rejectedOps.indexOf(shelf)>=0;
+  const rejected=(r.rejectedOps&&r.rejectedOps.indexOf(shelf)>=0)||r.rejected;
   if(!r.ok||r.queued||rejected){
     delete S.shelfDone[shelf];save("state");
-    toast(rejected?"Submit rejected — bin is locked by another user":"Submit nahi hua ("+(r.error||"internet / server problem")+"). Scans safe hain, dobara Submit karein.","err");
+    toast(rejected?"Submit rejected — bin is locked by another user. Your scans are safe on this device; ask the admin.":"Submit NAHI hua ("+(r.error||"internet / server problem")+"). Scans is device me safe hain — internet aane par dobara Submit dabayein.","err");
     render();return}
   if(S.cfg.shelfLocks)delete S.cfg.shelfLocks[shelf];
   const finished=autoCompleteTask();
-  toast(finished?"All bins completed. Audit task is automatically closed.":"Bin "+shelf+" submitted & locked","good");
-  S.activeShelf=null;S.editId=null;render();window.scrollTo({top:0});
+  toast(finished?"All bins completed. Audit task is automatically closed.":"Bin "+shelf+" submitted"+(confirmed?" · server confirmed "+fmt(confirmed.q)+" pcs in "+confirmed.n+" entries":""),"good");
+  S.activeShelf=null;S.editId=null;S.scanLog=[];S._lastSku="";render();window.scrollTo({top:0});
 }
 
 function lineById(id){return S.idx.lineKey.get(String(id))||S.lines.find(x=>String(x.id)===String(id))}
@@ -1822,7 +1884,7 @@ function shelfLineTable(shelf,locked){
   if(!rows.length){card.append(el("p",{class:"muted",text:"Nothing scanned on this shelf yet."}));return card}
   const tb=el("tbody");
   const sorted=rows.slice().sort((a,b)=>String(b.ts||"").localeCompare(String(a.ts||"")));
-  const shown=S.showAllLines===shelf?sorted:sorted.slice(0,100);
+  const shown=S.showAllLines===shelf?sorted:sorted.slice(0,30);
   shown.forEach(l=>{
     const L=life(l.mfg,l.exp);
     const desc=(S.idx.masterSku.get(String(shelf)+"\u0000"+String(l.sku))||{}).desc||"";
@@ -1864,49 +1926,88 @@ function entryRow(shelf,skuIdx){
   targetRows.forEach(r=>target.set(r.sku,(target.get(r.sku)||0)+num(r.qty)));
   const counted=sku=>categoryScanCount(shelf,sku);
   card.append(el("div",{class:"mode-banner"},
-    el("div",{},el("strong",{text:"SKU-based scanning mode"}),
-      el("div",{class:"hint",text:"Scan a SKU / EAN. Apparel/Electronics confirm 1 pc automatically; Cosmetics needs Batch + MFG + Expiry + Qty. SKU not in this bin asks for confirmation."})),
+    el("div",{},el("strong",{text:"SKU-based scanning — saved on this device"}),
+      el("div",{class:"hint",text:"Internet is not used while scanning. Everything uploads to Google Sheet only when you press Submit."})),
     el("span",{class:"category-badge",text:"SKU Category"})));
 
+  const sticky=el("div",{class:"scan-sticky"});
+  const strip=el("div",{class:"live-strip"});
   const sku=el("input",{class:"big scan-input",placeholder:"Scan SKU / EAN…",autocomplete:"off",autocorrect:"off",autocapitalize:"characters",spellcheck:"false"});
   kbAttrs(sku,"text");
   const extraWrap=el("div",{class:"scan-extra",style:"display:none"});
   const batch=el("input",{placeholder:"Batch",autocomplete:"off"});kbAttrs(batch,"text");
   const mfg=el("input",{type:"date"}),exp=el("input",{type:"date"});
   const qty=el("input",{type:"number",min:"1",step:"1",value:"1"});kbAttrs(qty,"numeric");
-  const mode=el("div",{class:"hint",style:"min-height:22px"});
+  const mode=el("div",{class:"hint",style:"min-height:20px"});
+  const status=el("div",{class:"scan-status idle",text:"Ready — scan the first SKU."});
+  const logHost=el("div",{class:"scan-log"});
   const add=el("button",{type:"button",class:"btn hv",style:"display:none",onclick:()=>commit()},"Confirm 1 PC");
   const addKb=el("button",{type:"button",class:"btn hv",style:S.kb?"":"display:none",onclick:()=>handleEnter()},"Add");
-  const clear=el("button",{type:"button",class:"btn ghost",onclick(){resetForm();mode.className="hint";mode.textContent="Ready for next SKU scan.";focusNoKb(sku)}},"Clear");
+  const clear=el("button",{type:"button",class:"btn ghost",onclick(){resetForm();mode.className="hint";mode.textContent="";focusNoKb(sku);hideKb()}},"Clear");
   extraWrap.append(
     el("label",{class:"f"},el("span",{text:"Batch *"}),batch),
     el("label",{class:"f"},el("span",{text:"MFG *"}),mfg),
     el("label",{class:"f"},el("span",{text:"Expiry *"}),exp),
     el("label",{class:"f"},el("span",{text:"Qty *"}),qty));
-  const kb=kbButton(()=>sku);
-  kb.addEventListener("click",()=>{addKb.style.display=S.kb?"":"none"});
-  card.append(el("div",{class:"lblrow"},el("span",{text:"SKU / EAN"}),kb),sku);
-  card.append(extraWrap,el("div",{class:"scan-actions"},add,addKb,clear),mode);
+  const kb=kbButton(()=>sku,()=>{addKb.style.display=S.kb?"":"none"});
+  sticky.append(strip,el("div",{class:"lblrow"},el("span",{text:"SKU / EAN"}),kb),sku,extraWrap,
+    el("div",{class:"scan-actions"},add,addKb,clear),status,mode,logHost);
+  card.append(sticky);
 
-  /* SUBMIT sits directly under the scan box; System / Physical / Variance are at the top of the page */
+  /* SUBMIT sits directly under the scan box */
   card.append(el("div",{class:"submit-wrap"},
     el("button",{type:"button",class:"btn ok block submit-big",onclick(){submitShelf(shelf)}},"✓ Submit bin "+shelf),
-    el("div",{class:"hint",text:"Upar System qty / Physical scan / Variance check karke Submit karein."})));
+    el("div",{class:"hint",text:"Check System / Physical / Variance, then Submit. Data goes to Google Sheet now, and the server confirms the pcs."})));
 
-  const targetList=el("div",{class:"card",style:"margin-top:10px;padding:10px"});
-  targetList.append(el("h3",{text:"SKU scan progress"}));
-  const tb=el("tbody");
-  target.forEach((q,skuCode)=>{const got=counted(skuCode), diff=got-num(q), cat=skuCategory(shelf,skuCode);tb.append(el("tr",{},
-    el("td",{class:"code",text:skuCode}),el("td",{text:sellerOf(shelf,skuCode)||"—"}),el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
-    el("td",{class:"n",text:fmt(q)}),el("td",{class:"n",text:fmt(got)}),
-    el("td",{},el("span",{class:"tag "+(diff===0?"ok":diff>0?"warn":"idle"),text:diff===0?"Match":diff>0?"Extra "+fmt(diff):fmt(-diff)+" pending"}))));});
-  const extraSkus=[...new Set(lineRows(shelf).filter(l=>!target.has(l.sku)).map(l=>l.sku))];
-  extraSkus.forEach(skuCode=>{const got=counted(skuCode), cat=skuCategory(shelf,skuCode);tb.append(el("tr",{},
-    el("td",{class:"code",text:skuCode}),el("td",{text:sellerOf(shelf,skuCode)||"—"}),el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
-    el("td",{class:"n",text:"—"}),el("td",{class:"n",text:fmt(got)}),
-    el("td",{},el("span",{class:"tag info",text:"Excess (not in upload)"}))));});
-  targetList.append(el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},el("th",{text:"SKU"}),el("th",{text:"Seller"}),el("th",{text:"Category"}),el("th",{class:"n",text:"System Qty"}),el("th",{class:"n",text:"Scanned"}),el("th",{text:"Status"}))),tb)));
-  card.append(targetList);
+  /* ---- live strip + pending SKU list: rebuilt after every scan (cheap) ---- */
+  function pendingInfoNow(){let ps=0,pp=0;target.forEach((q,c)=>{const g=counted(c);if(g<q){ps++;pp+=q-g}});return{ps,pp}}
+  function fillStrip(){
+    const s2=shelfStat(shelf),pi=pendingInfoNow();
+    strip.replaceChildren(
+      el("span",{},"Physical ",el("b",{text:fmt(s2.cntQty)})," / System ",el("b",{text:fmt(s2.sysQty)})),
+      el("span",{class:"var "+(s2.diff===0?"ok":s2.diff>0?"warn":"bad")},"Variance ",el("b",{text:sgn(s2.diff)})),
+      el("span",{class:pi.ps?"pend":"okk"},pi.ps?("Pending "+pi.ps+" SKU · "+fmt(pi.pp)+" pcs"):"All SKUs counted ✓"),
+      el("span",{class:"saved",text:"● saved on device"}));
+  }
+  const progHost=el("div",{class:"card",style:"margin-top:10px;padding:10px"});
+  card.append(progHost);
+  function fillProgress(){
+    const pf=S.pf||"pending";
+    const rows=[];
+    target.forEach((q,c)=>{const g=counted(c);rows.push({sku:c,q,g,d:g-q,extra:false})});
+    [...new Set(lineRows(shelf).filter(l=>!target.has(l.sku)).map(l=>l.sku))].forEach(c=>rows.push({sku:c,q:0,g:counted(c),d:counted(c),extra:true}));
+    const nPend=rows.filter(r=>!r.extra&&r.d<0).length,nExtra=rows.filter(r=>r.extra||r.d>0).length;
+    let list=rows;
+    if(pf==="pending")list=rows.filter(r=>!r.extra&&r.d<0);
+    else if(pf==="extra")list=rows.filter(r=>r.extra||r.d>0);
+    list=list.slice().sort((a,b)=>(a.d<0?0:a.d===0?1:2)-(b.d<0?0:b.d===0?1:2)||String(a.sku).localeCompare(String(b.sku)));
+    const seg=el("div",{class:"seg"});
+    [["pending","Pending ("+nPend+")"],["all","All ("+rows.length+")"],["extra","Extra ("+nExtra+")"]].forEach(p=>
+      seg.append(el("button",{type:"button","aria-pressed":String(pf===p[0]),onclick(){S.pf=p[0];fillProgress()}},p[1])));
+    const tb=el("tbody");
+    list.forEach(r=>{const cat=skuCategory(shelf,r.sku);
+      tb.append(el("tr",{class:S._lastSku===r.sku?"hit":""},
+        el("td",{class:"code",text:r.sku}),el("td",{text:sellerOf(shelf,r.sku)||"—"}),
+        el("td",{},el("span",{class:"category-badge",text:categoryLabel(cat)})),
+        el("td",{class:"n",text:r.extra?"—":fmt(r.q)}),el("td",{class:"n",text:fmt(r.g)}),
+        el("td",{},el("span",{class:"tag "+(r.extra?"info":r.d===0?"ok":r.d>0?"warn":"bad"),
+          text:r.extra?"Excess (not in upload)":r.d===0?"Match":r.d>0?"Extra "+fmt(r.d):fmt(-r.d)+" pending"}))));});
+    const head=el("div",{class:"row",style:"justify-content:space-between;align-items:center;margin-bottom:6px"},el("h3",{style:"margin:0",text:"SKU scan progress"}),seg);
+    progHost.replaceChildren(head,list.length?el("div",{class:"scroll cap"},el("table",{},el("thead",{},el("tr",{},el("th",{text:"SKU"}),el("th",{text:"Seller"}),el("th",{text:"Category"}),el("th",{class:"n",text:"System Qty"}),el("th",{class:"n",text:"Scanned"}),el("th",{text:"Status"}))),tb)):
+      el("p",{class:pf==="pending"?"hint ok":"muted",text:pf==="pending"?"No pending SKU — every SKU of this bin has been scanned.":"Nothing to show."}));
+  }
+  function renderLog(){
+    const L=(S.scanLog||[]).filter(x=>x.shelf===shelf).slice(0,5);
+    logHost.replaceChildren(...L.map(x=>el("div",{class:"lg "+x.cls},el("span",{class:"code",text:x.time}),el("span",{class:"code",text:x.code}),el("span",{text:x.res}))));
+  }
+  function note(cls,msg,code,res){
+    status.className="scan-status "+cls;status.textContent=msg;
+    S.scanLog=S.scanLog||[];S.scanLog.unshift({shelf,code:code||"",res:res||msg,cls,time:new Date().toTimeString().slice(0,8)});S.scanLog.length=Math.min(S.scanLog.length,60);
+    renderLog();
+    if(cls==="bad"){try{navigator.vibrate&&navigator.vibrate([120,60,120])}catch(e){}}
+  }
+  S._entryFast=()=>{fillStrip();fillProgress()};
+  fillStrip();fillProgress();renderLog();
 
   let autoTimer=null,gating=false,okFor="",okFlags=null;
   const cleanCode=()=>norm(String(sku.value).replace(/[\u0000-\u001F\u007F]/g,""));
@@ -1915,17 +2016,17 @@ function entryRow(shelf,skuIdx){
     extraWrap.style.display="none";add.style.display="none"}
   function paint(){
     const v=cleanCode(), sys=target.get(v)||0, cat=v?skuCategory(shelf,v):"";
-    if(!v){mode.className="hint";mode.textContent="Ready for next SKU scan.";extraWrap.style.display="none";add.style.display="none";return}
+    if(!v){mode.className="hint";mode.textContent="";extraWrap.style.display="none";add.style.display="none";return}
     const desc=(skuIdx.get(v)||{}).desc||"";
-    const sysNote=sys?("System qty: "+fmt(sys)+"; extra scan is allowed."):"Not in this bin's uploaded list — you will be asked to confirm it as excess.";
+    const sysNote=sys?"":"Not in this bin's uploaded list — you will be asked to confirm it as excess.";
     if(isCosmetics(cat)){
-      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+"Cosmetics mode — Batch, MFG, Expiry and Qty are mandatory. "+sysNote;
+      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+"Cosmetics — Batch, MFG, Expiry and Qty are mandatory. "+sysNote;
       extraWrap.style.display="grid";add.style.display="inline-flex";
       const q=Math.max(1,Math.floor(num(qty.value))||1);
       add.textContent="Confirm "+fmt(q)+" PC"+(q===1?"":"s");
       add.disabled=!(batch.value.trim()&&mfg.value&&exp.value&&q>=1);
     }else{
-      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+categoryLabel(cat)+" mode — 1 pc, confirms automatically. "+sysNote;
+      mode.className="hint ok";mode.textContent=(desc?desc+" · ":"")+categoryLabel(cat)+" — 1 pc, confirms automatically. "+sysNote;
       extraWrap.style.display="none";add.style.display="none";
     }
   }
@@ -1951,12 +2052,11 @@ function entryRow(shelf,skuIdx){
     const v=cleanCode();if(!v)return;
     if(isCosmetics(skuCategory(shelf,v))){
       const f=await gate(v);
-      if(!f){resetForm();mode.className="hint bad";mode.textContent="Scan discarded.";focusNoKb(sku);return}
+      if(!f){note("bad","Discarded (not saved): "+v,v,"discarded");resetForm();focusNoKb(sku);hideKb();return}
       paint();focusNoKb(batch);
     }else commit();
   }
-  /* Scanner without Enter suffix: save only after the code has been quiet for 0.7 s (slow scanners type char by char, so a short
-     timer used to save half a code). Never while the keyboard is ON - typing by hand must not auto-save. */
+  /* Scanner without Enter suffix: save only after the code has been quiet for 0.7 s. Never while the keyboard is ON. */
   function scheduleAutoCommit(){
     clearTimeout(autoTimer);
     if(S.kb)return;
@@ -1973,11 +2073,13 @@ function entryRow(shelf,skuIdx){
   mfg.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();exp.focus()}});
   exp.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();qty.focus();qty.select()}});
   qty.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();commit()}});
+  /* tapping the SKU box never opens the soft keyboard unless Keyboard is ON (scanner keeps typing into the focused box) */
+  ["touchstart","mousedown"].forEach(ev=>sku.addEventListener(ev,e=>{if(S.kb)return;e.preventDefault();focusNoKb(sku);hideKb()},{passive:false}));
   async function commit(){
     clearTimeout(autoTimer);
     if(gating)return;
     const v=cleanCode(); if(!v){toast("Scan SKU first","err");focusNoKb(sku);return}
-    if(!lockOk(shelf)){toast("Bin lock aapke paas nahi hai — dobara lock karein","err");render();return}
+    if(!lockOk(shelf)){note("bad","NOT SAVED — bin lock is missing. Lock the bin again.",v,"blocked");resetForm();render();return}
     const cat=skuCategory(shelf,v);
     let q=1;
     if(isCosmetics(cat)){
@@ -1986,19 +2088,21 @@ function entryRow(shelf,skuIdx){
       q=Math.max(1,Math.floor(num(qty.value))||1);
     }
     const flags=await gate(v);
-    if(!flags){resetForm();mode.className="hint bad";mode.textContent="Scan discarded — nothing saved.";focusNoKb(sku);return}
-    /* a scanner that reads the same label twice in a flash must not count 2 pcs */
-    const nowT=Date.now(),lastS=S._lastScan||{};
-    if(lastS.v===v&&lastS.shelf===shelf&&nowT-lastS.t<450&&!isCosmetics(cat)){
-      resetForm();mode.className="hint bad";mode.textContent="Duplicate read ignored — same code within 0.5 s.";S._lastScan={v,shelf,t:nowT};focusNoKb(sku);return}
-    S._lastScan={v,shelf,t:nowT};
-    appendScan(shelf,v,{category:cat,batch:batch.value.trim(),mfg:mfg.value||"",exp:exp.value||"",qty:q,extra:!!flags.extra,nonNum:!!flags.nonNum});
+    if(!flags){note("bad","Discarded (not saved): "+v,v,"discarded");resetForm();focusNoKb(sku);hideKb();return}
+    try{
+      appendScan(shelf,v,{category:cat,batch:batch.value.trim(),mfg:mfg.value||"",exp:exp.value||"",qty:q,extra:!!flags.extra,nonNum:!!flags.nonNum});
+    }catch(err){note("bad","NOT SAVED: "+(err&&err.message||err),v,"error");return}
     resetForm();
-    mode.className="hint ok";mode.textContent=fmt(q)+" pc saved"+(flags.extra?" as EXCESS":"")+". Scan the next SKU.";scheduleRender();
-    focusNoKb(sku);
+    S._lastSku=v;
+    const got=counted(v),sys=target.get(v)||0;
+    note(flags.extra?"warn":"ok",(flags.extra?"EXCESS +":"✓ +")+fmt(q)+"  "+v+(sys?"  →  "+fmt(got)+" / "+fmt(sys):"  →  "+fmt(got)+" (not in upload)"),v,"+"+fmt(q)+(sys?" ("+fmt(got)+"/"+fmt(sys)+")":" excess"));
+    /* fast part now, heavy tables a moment later - the SKU box itself is never rebuilt, so the next scan cannot be lost */
+    if(S._fast)S._fast();
+    clearTimeout(S._hvT);S._hvT=setTimeout(()=>{if(S._heavy)S._heavy()},500);
+    scanChip();
+    focusNoKb(sku);hideKb();
   }
-  /* Scanner keystrokes must never be lost: if focus slipped off the SKU box (tap on page, keyboard toggle, device quirk),
-     the keys are collected here and handed to the SKU box when the scanner sends Enter. */
+  /* Scanner keystrokes must never be lost: if focus slipped off the SKU box, keys are collected here and handed over on Enter. */
   if(S._kd){document.removeEventListener("keydown",S._kd,true);S._kd=null}
   let kbuf="",kT=null;
   S._kd=e=>{
@@ -2009,7 +2113,8 @@ function entryRow(shelf,skuIdx){
   };
   document.addEventListener("keydown",S._kd,true);
   sku.addEventListener("blur",()=>{if(S.kb)return;setTimeout(()=>{if(MODAL_OPEN===0&&!gating&&sku.isConnected&&(!document.activeElement||document.activeElement===document.body))focusNoKb(sku)},150)});
-  setTimeout(()=>focusNoKb(sku),40);
+  setTimeout(()=>{focusNoKb(sku);hideKb()},40);
+  scanChip();
   return card;
 }
 
